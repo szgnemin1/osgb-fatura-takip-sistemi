@@ -18,6 +18,7 @@
     <a href="https://www.sqlite.org/"><img src="https://img.shields.io/badge/SQLite-WAL_Mode-003B57?style=for-the-badge&logo=sqlite" alt="SQLite WAL"></a>
     <a href="https://socket.io/"><img src="https://img.shields.io/badge/Socket.io-Realtime-black?style=for-the-badge&logo=socket.io" alt="Socket.io"></a>
     <a href="https://tailwindcss.com/"><img src="https://img.shields.io/badge/TailwindCSS-v3-38B2AC?style=for-the-badge&logo=tailwind-css" alt="Tailwind CSS"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-NonCommercial-red?style=for-the-badge" alt="License: Non-Commercial"></a>
   </p>
 
 </div>
@@ -209,9 +210,14 @@ Projeyi Windows ortamında tek tıkla konsol penceresi olmadan arka planda başl
 
 ---
 
-## 📄 Lisans
-Bu proje özel mülkiyet ve ticari kullanım standartlarına göre yapılandırılmıştır. Tüm hakları saklıdır.
+## 📄 Lisans & Ticari Satış Yasağı
+
+Bu proje **[PolyForm Noncommercial License 1.0.0](LICENSE)** ile lisanslanmıştır.
+
+> **TİCARİ SATIŞ VE ÜCRETLİ DAĞITIM YASAĞI:**  
+> Bu yazılım açık kaynak kodludur; herkes tarafından serbestçe incelenebilir, öğrenilebilir, kişisel veya kurum içi operasyonlarda **ücretsiz** olarak çalıştırılabilir ve geliştirilebilir.  
+> Ancak bu yazılımın, kaynak kodlarının veya bu kodlardan türetilen herhangi bir sürümün **doğrudan veya dolaylı olarak ücret karşılığı satılması, pazarlanması, lisanslanması, kiralanması (ücretli SaaS olarak sunulması dahil) veya herhangi bir bedel karşılığında dağıtılması KESİNLİKLE YASAKTIR.**
 
 <div align="center">
-  <sub>Emin Sezgin tarafından geliştirilmiştir.</sub>
+  <sub>Telif Hakkı © 2026 Emin Sezgin. Tüm hakları saklıdır.</sub>
 </div>
