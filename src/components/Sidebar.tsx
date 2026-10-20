@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Building2, Calculator, Receipt, FileText, Settings, TrendingDown, LifeBuoy, X, Wallet, LogOut, FileSignature } from 'lucide-react';
+import { LayoutDashboard, Building2, Calculator, Receipt, FileText, Settings, TrendingDown, LifeBuoy, X, Wallet, LogOut, FileSignature, GitCompare } from 'lucide-react';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -65,6 +65,10 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           <NavLink to="/firms" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
             <Building2 className="w-5 h-5" />
             <span>Firma Kayıt</span>
+          </NavLink>
+          <NavLink to="/tetkik-mapping" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
+            <GitCompare className="w-5 h-5" />
+            <span>Tetkik Eşleştirme</span>
           </NavLink>
           <NavLink to="/prepare" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
             <Calculator className="w-5 h-5" />

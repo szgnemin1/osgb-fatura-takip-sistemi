@@ -83,7 +83,7 @@ function normalizeCompanyName(name) {
     return withoutSuffix.length >= 2 ? withoutSuffix : cleaned;
 }
 
-// Tetkik Takip Otomatik Eşitleme (Kayıp/Eksik Tetkik Önleme ve Akıllı Eşleştirme)
+// Tetkik Takip Eşitleme (Otomatik Tahmin Yok - Sadece Kullanıcının Eşleştirdiği Firmalar)
 async function reconcileWithTetkik() {
     try {
         let tetkikDataPath = path.join(__dirname, 'osgb-tetkik-takip', 'global_data.json');
@@ -115,46 +115,14 @@ async function reconcileWithTetkik() {
             } catch (_) {}
         }
 
-        // Firmaları akıllı eşleştirme için yükle
-        const fRows = await db.all("SELECT data FROM firms");
-        const firms = fRows.map(r => {
-            try {
-                const f = JSON.parse(r.data);
-                const norm = normalizeCompanyName(f.name);
-                return {
-                    id: f.id,
-                    name: f.name,
-                    norm,
-                    tokens: norm.split(' ').filter(t => t.length > 0),
-                    lastInvoiceDate: firmLastInvoiceMap.get(f.id) || null
-                };
-            } catch (_) { return null; }
-        }).filter(Boolean);
-
-        const matchReferral = (sourceComp) => {
-            if (!sourceComp) return null;
-            const sNorm = normalizeCompanyName(sourceComp);
-            if (!sNorm) return null;
-
-            let found = firms.find(f => f.norm === sNorm);
-            if (found) return found;
-
-            found = firms.find(f => f.norm.startsWith(sNorm) || sNorm.startsWith(f.norm));
-            if (found) return found;
-
-            const sTokens = sNorm.split(' ').filter(t => t.length > 0);
-            if (sTokens.length >= 2) {
-                found = firms.find(f => f.tokens.length >= 2 && f.tokens[0] === sTokens[0] && f.tokens[1] === sTokens[1]);
-                if (found) return found;
-
-                found = firms.find(f => sTokens.every(st => f.tokens.includes(st)));
-                if (found) return found;
-            } else if (sTokens.length === 1 && sTokens[0].length >= 3) {
-                const matches = firms.filter(f => f.tokens.includes(sTokens[0]));
-                if (matches.length === 1) return matches[0];
+        // Kullanıcının kaydettiği kesin eşleştirmeleri çek (Otomatik tahmin yapılmaz!)
+        const mappingRows = await db.all("SELECT tetkik_name, target_firm_id FROM tetkik_firm_mappings");
+        const mappingMap = new Map();
+        for (const mr of mappingRows) {
+            if (mr.target_firm_id && mr.target_firm_id !== 'IGNORE') {
+                mappingMap.set(mr.tetkik_name, mr.target_firm_id);
             }
-            return null;
-        };
+        }
 
         let syncedCount = 0;
         await db.run('BEGIN IMMEDIATE TRANSACTION');
@@ -163,37 +131,53 @@ async function reconcileWithTetkik() {
 
         for (const ref of invoiceReferrals) {
             const existingRow = await db.get(`SELECT id, data FROM external_health WHERE data LIKE ?`, `%"referralId":"${ref.id}"%`);
-            if (!existingRow) {
-                const matchedFirm = matchReferral(ref.employee?.company);
-                const refDate = new Date(ref.referralDate || Date.now());
+            const compName = (ref.employee?.company || '').trim();
+            const matchedFirmId = mappingMap.get(compName) || undefined;
+            const refDate = new Date(ref.referralDate || Date.now());
 
-                // Eğer firmanın bu sevk tarihinden sonra/eşit kesilmiş faturası varsa geçmişte faturalandırılmış sayılır
-                let isBilled = false;
-                if (matchedFirm && matchedFirm.lastInvoiceDate && matchedFirm.lastInvoiceDate >= refDate) {
+            // Eğer eşleşen firmanın bu sevk tarihinden sonra/eşit kesilmiş faturası varsa geçmişte faturalandırılmış sayılır
+            let isBilled = false;
+            if (matchedFirmId && firmLastInvoiceMap.has(matchedFirmId)) {
+                const lastDate = firmLastInvoiceMap.get(matchedFirmId);
+                if (lastDate && lastDate >= refDate) {
                     isBilled = true;
                 }
+            }
 
+            if (!existingRow) {
                 const newId = 'ext_' + Date.now() + Math.random().toString(36).substr(2, 5);
                 const item = {
                     id: newId,
-                    sourceCompanyName: ref.employee?.company || 'Bilinmiyor',
+                    sourceCompanyName: compName || 'Bilinmiyor',
                     employeeName: ref.employee?.fullName || 'Bilinmiyor',
                     exams: ref.exams || [],
                     amount: Number(ref.totalPrice) || 0,
                     date: ref.referralDate || new Date().toISOString(),
                     isBilled: isBilled,
                     referralId: ref.id,
-                    matchedFirmId: matchedFirm ? matchedFirm.id : undefined
+                    matchedFirmId: matchedFirmId
                 };
                 await insertStmt.run(newId, JSON.stringify(item));
                 syncedCount++;
             } else {
                 const existingData = JSON.parse(existingRow.data);
+                let changed = false;
+
                 if (!existingData.isBilled && Number(existingData.amount) !== Number(ref.totalPrice)) {
                     existingData.amount = Number(ref.totalPrice) || 0;
-                    existingData.sourceCompanyName = ref.employee?.company || existingData.sourceCompanyName;
-                    existingData.employeeName = ref.employee?.fullName || existingData.employeeName;
-                    existingData.exams = ref.exams || existingData.exams;
+                    changed = true;
+                }
+                if (existingData.sourceCompanyName !== compName && compName) {
+                    existingData.sourceCompanyName = compName;
+                    changed = true;
+                }
+                // Eşleştirme tablosundaki güncel ID'yi yansıt
+                if (existingData.matchedFirmId !== matchedFirmId) {
+                    existingData.matchedFirmId = matchedFirmId;
+                    changed = true;
+                }
+
+                if (changed) {
                     await updateStmt.run(JSON.stringify(existingData), existingRow.id);
                     syncedCount++;
                 }
@@ -220,6 +204,7 @@ async function reconcileWithTetkik() {
     await db.run('PRAGMA synchronous = NORMAL;');
     await db.run('PRAGMA cache_size = -64000;');
     await db.run('CREATE TABLE IF NOT EXISTS invoice_batches (id TEXT PRIMARY KEY, data TEXT);');
+    await db.run('CREATE TABLE IF NOT EXISTS tetkik_firm_mappings (id TEXT PRIMARY KEY, tetkik_name TEXT UNIQUE, target_firm_id TEXT, updated_at TEXT);');
     console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu Aktif).");
     await reconcileWithTetkik();
 })();
@@ -976,6 +961,220 @@ app.post('/api/webhook/health-services', async (req, res) => {
     } catch (e) {
         console.error('Webhook hatası:', e);
         res.status(500).json({ error: 'Internal error' });
+    }
+});
+
+// ==========================================
+// 6. TETKİK FİRMA EŞLEŞTİRME YÖNETİMİ
+// ==========================================
+
+// 6.1 Tetkik Sistemindeki Firmaları ve Eşleşme Durumlarını Getir
+app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
+    try {
+        let tetkikDataPath = path.join(__dirname, 'osgb-tetkik-takip', 'global_data.json');
+        if (!fs.existsSync(tetkikDataPath)) {
+            tetkikDataPath = path.join(__dirname, '..', 'osgb-tetkik-takip', 'global_data.json');
+        }
+        if (!fs.existsSync(tetkikDataPath)) {
+            tetkikDataPath = 'C:\\Users\\emins\\Downloads\\osgb-tetkik-takip\\global_data.json';
+        }
+
+        let tetkikCompanies = [];
+        let referrals = [];
+        if (fs.existsSync(tetkikDataPath)) {
+            try {
+                const raw = JSON.parse(fs.readFileSync(tetkikDataPath, 'utf8'));
+                tetkikCompanies = raw.companies || [];
+                referrals = raw.referrals || [];
+            } catch (_) {}
+        }
+
+        // Mevcut eşleştirmeleri çek
+        const mappingRows = await db.all("SELECT tetkik_name, target_firm_id FROM tetkik_firm_mappings");
+        const mappingMap = new Map();
+        for (const mr of mappingRows) {
+            mappingMap.set(mr.tetkik_name, mr.target_firm_id);
+        }
+
+        // Fatura Takip firmalarını çek
+        const fRows = await db.all("SELECT id, data FROM firms");
+        const faturaFirms = fRows.map(r => {
+            try { return JSON.parse(r.data); } catch (_) { return null; }
+        }).filter(Boolean).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'tr'));
+
+        // Tetkik firmalarını topla
+        const compMap = new Map();
+
+        // 1. Tetkik sisteminde kayıtlı şirketler
+        for (const c of tetkikCompanies) {
+            const name = (c.name || '').trim();
+            if (!name) continue;
+            compMap.set(name, {
+                id: c.id,
+                name: name,
+                hazardClass: c.hazardClass || '-',
+                doctor: c.assignedDoctor || '-',
+                specialist: c.assignedSpecialist || '-',
+                totalReferrals: 0,
+                totalAmount: 0,
+                unbilledReferrals: 0,
+                unbilledAmount: 0,
+                matchedFirmId: mappingMap.get(name) || ''
+            });
+        }
+
+        // 2. Sevklerden gelen şirketler ve istatistikler
+        for (const ref of referrals) {
+            const compName = (ref.employee?.company || '').trim();
+            if (!compName) continue;
+
+            if (!compMap.has(compName)) {
+                compMap.set(compName, {
+                    id: 'ref_' + compName,
+                    name: compName,
+                    hazardClass: '-',
+                    doctor: '-',
+                    specialist: '-',
+                    totalReferrals: 0,
+                    totalAmount: 0,
+                    unbilledReferrals: 0,
+                    unbilledAmount: 0,
+                    matchedFirmId: mappingMap.get(compName) || ''
+                });
+            }
+
+            const item = compMap.get(compName);
+            item.totalReferrals++;
+            const price = Number(ref.totalPrice) || 0;
+            item.totalAmount += price;
+
+            if (ref.paymentMethod === 'INVOICE' && !ref.isExternalRecord) {
+                item.unbilledReferrals++;
+                item.unbilledAmount += price;
+            }
+        }
+
+        const companiesList = Array.from(compMap.values()).sort((a, b) => {
+            if (b.unbilledAmount !== a.unbilledAmount) {
+                return b.unbilledAmount - a.unbilledAmount;
+            }
+            if (b.totalReferrals !== a.totalReferrals) {
+                return b.totalReferrals - a.totalReferrals;
+            }
+            return a.name.localeCompare(b.name, 'tr');
+        });
+
+        res.json({
+            success: true,
+            tetkikCompanies: companiesList,
+            faturaFirms
+        });
+    } catch (e) {
+        console.error('Tetkik companies error:', e);
+        res.status(500).json({ error: 'Tetkik firmaları yüklenemedi' });
+    }
+});
+
+// 6.2 Eşleştirmeleri Kaydet ve Sevkleri Güncelle
+app.post('/api/tetkik/save-mappings', authenticateToken, async (req, res) => {
+    try {
+        const { mappings } = req.body;
+        if (!Array.isArray(mappings)) return res.status(400).json({ error: 'Geçersiz veri' });
+
+        await db.run('BEGIN IMMEDIATE TRANSACTION');
+        const stmt = await db.prepare("INSERT OR REPLACE INTO tetkik_firm_mappings (id, tetkik_name, target_firm_id, updated_at) VALUES (?, ?, ?, ?)");
+        
+        for (const m of mappings) {
+            if (!m.tetkikName) continue;
+            const id = 'tfm_' + Buffer.from(m.tetkikName).toString('base64').replace(/=/g, '');
+            await stmt.run(id, m.tetkikName, m.targetFirmId || 'IGNORE', new Date().toISOString());
+        }
+        await stmt.finalize();
+
+        // external_health tablosundaki sevkleri anında bu eşleştirmelere göre güncelle
+        const mappingMap = new Map();
+        mappings.forEach(m => mappingMap.set(m.tetkikName, m.targetFirmId));
+
+        const healthRows = await db.all("SELECT id, data FROM external_health");
+        const updateHealthStmt = await db.prepare("UPDATE external_health SET data = ? WHERE id = ?");
+        let updatedCount = 0;
+
+        for (const hr of healthRows) {
+            try {
+                const item = JSON.parse(hr.data);
+                if (mappingMap.has(item.sourceCompanyName)) {
+                    const targetId = mappingMap.get(item.sourceCompanyName);
+                    const newMatched = (targetId && targetId !== 'IGNORE') ? targetId : undefined;
+                    if (item.matchedFirmId !== newMatched) {
+                        item.matchedFirmId = newMatched;
+                        await updateHealthStmt.run(JSON.stringify(item), hr.id);
+                        updatedCount++;
+                    }
+                }
+            } catch (_) {}
+        }
+        await updateHealthStmt.finalize();
+        await db.run('COMMIT');
+
+        io.emit('db_updated');
+        res.json({ success: true, count: mappings.length, updatedCount });
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        console.error('Save mappings error:', e);
+        res.status(500).json({ error: 'Eşleştirmeler kaydedilemedi' });
+    }
+});
+
+// 6.3 Tetkik Firmasından Fatura Sistemine Yeni Firma Oluştur ve Eşleştir
+app.post('/api/tetkik/create-firm', authenticateToken, async (req, res) => {
+    try {
+        const { tetkikName, hazardClass } = req.body;
+        if (!tetkikName) return res.status(400).json({ error: 'Firma adı gerekli' });
+
+        const newId = 'firm_' + Date.now() + Math.random().toString(36).substr(2, 4);
+        const newFirm = {
+            id: newId,
+            name: tetkikName.trim(),
+            hazardClass: hazardClass && hazardClass !== '-' ? hazardClass : 'Az Tehlikeli',
+            pricingModel: 'STANDARD',
+            baseFee: 0,
+            basePersonLimit: 0,
+            extraPersonFee: 0,
+            defaultInvoiceType: 'E-Arşiv',
+            expertPercentage: 50,
+            doctorPercentage: 50,
+            serviceType: 'BOTH',
+            createdAt: new Date().toISOString()
+        };
+
+        await db.run('BEGIN IMMEDIATE TRANSACTION');
+        await db.run("INSERT INTO firms (id, data) VALUES (?, ?)", newId, JSON.stringify(newFirm));
+
+        const mappingId = 'tfm_' + Buffer.from(tetkikName).toString('base64').replace(/=/g, '');
+        await db.run("INSERT OR REPLACE INTO tetkik_firm_mappings (id, tetkik_name, target_firm_id, updated_at) VALUES (?, ?, ?, ?)",
+            mappingId, tetkikName, newId, new Date().toISOString());
+
+        // Sevkleri güncelle
+        const healthRows = await db.all("SELECT id, data FROM external_health");
+        const updateHealthStmt = await db.prepare("UPDATE external_health SET data = ? WHERE id = ?");
+        for (const hr of healthRows) {
+            try {
+                const item = JSON.parse(hr.data);
+                if (item.sourceCompanyName === tetkikName) {
+                    item.matchedFirmId = newId;
+                    await updateHealthStmt.run(JSON.stringify(item), hr.id);
+                }
+            } catch (_) {}
+        }
+        await updateHealthStmt.finalize();
+        await db.run('COMMIT');
+
+        io.emit('db_updated');
+        res.json({ success: true, firm: newFirm });
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        console.error('Create firm from tetkik error:', e);
+        res.status(500).json({ error: 'Firma oluşturulamadı' });
     }
 });
 

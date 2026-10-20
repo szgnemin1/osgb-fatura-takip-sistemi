@@ -13,6 +13,7 @@ import Support from './pages/Support';
 import Expenses from './pages/Expenses'; // Yeni Sayfa
 import Quotes from './pages/Quotes';
 import CuttingPortal from './pages/CuttingPortal';
+import TetkikMapping from './pages/TetkikMapping';
 import { db } from './services/db';
 import { Loader2, Menu, RefreshCw, AlertCircle } from 'lucide-react';
 import io from 'socket.io-client';
@@ -161,6 +162,7 @@ const App = () => {
               <Routes>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/firms" element={<FirmRegistration />} />
+                <Route path="/tetkik-mapping" element={<TetkikMapping />} />
                 <Route path="/prepare" element={<Preparation />} />
                 <Route path="/invoices" element={<Invoices />} />
                 <Route path="/expenses" element={<Expenses />} />

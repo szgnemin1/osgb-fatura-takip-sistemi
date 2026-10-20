@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
-import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network } from 'lucide-react';
+import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 
@@ -31,29 +31,6 @@ const Preparation = () => {
   const [showUnmatchedHealthModal, setShowUnmatchedHealthModal] = useState(false);
   const [selectedHealthMapping, setSelectedHealthMapping] = useState<Record<string, string>>({});
 
-  // Akıllı Şirket İsmi Normalizasyonu (Tetkik Sevk Eşleştirme)
-  const normalizeCompanyName = (name: string) => {
-    if (!name) return "";
-    let cleaned = String(name)
-        .replace(/İ/g, 'I').replace(/i/g, 'I').replace(/ı/g, 'I').replace(/I/g, 'I')
-        .replace(/Ğ/g, 'G').replace(/ğ/g, 'G').replace(/Ü/g, 'U').replace(/ü/g, 'U')
-        .replace(/Ş/g, 'S').replace(/ş/g, 'S').replace(/Ö/g, 'O').replace(/ö/g, 'O')
-        .replace(/Ç/g, 'C').replace(/ç/g, 'C')
-        .toUpperCase();
-
-    // Noktalı kısaltmaları birleştir: M.B.M. -> MBM
-    cleaned = cleaned.replace(/\b([A-Z0-9])\.([A-Z0-9])\.([A-Z0-9])\./g, '$1$2$3')
-                     .replace(/\b([A-Z0-9])\.([A-Z0-9])\./g, '$1$2')
-                     .replace(/[^A-Z0-9 ]/g, ' ')
-                     .replace(/\s+/g, ' ')
-                     .trim();
-
-    let withoutSuffix = cleaned.replace(/\b(LTD|STI|SAN|TIC|AS|A S|VE|LIMITED|SIRKETI|TICARET|ANONIM|SANAYI|TAAHHUT|AZ TEHLIKELI|COK TEHLIKELI|TEHLIKELI)\b/g, '')
-                               .replace(/\s+/g, ' ')
-                               .trim();
-    return withoutSuffix.length >= 2 ? withoutSuffix : cleaned;
-  };
-
   useEffect(() => {
     const loadData = async () => {
         // Veri App.tsx tarafından db_updated ile zaten güncellenir. Sadece localden okuyoruz.
@@ -80,50 +57,16 @@ const Preparation = () => {
         // Faturalandırılmamış ve bekleyen faturaya henüz bağlanmamış sağlık hizmetleri
         const unbilledHealthRecords = extHealth.filter((s: any) => !s.isBilled && !lockedHealthRecordIds.has(s.id));
 
-        // Firmaları normalizasyon ile hazırla
-        const preparedFirms = f.map(firm => {
-            const norm = normalizeCompanyName(firm.name);
-            return {
-                ...firm,
-                norm,
-                tokens: norm.split(' ').filter(t => t.length > 0)
-            };
-        });
-
-        const matchReferral = (sourceComp: string) => {
-            if (!sourceComp) return null;
-            const sNorm = normalizeCompanyName(sourceComp);
-            if (!sNorm) return null;
-
-            let found = preparedFirms.find(firm => firm.norm === sNorm);
-            if (found) return found;
-
-            found = preparedFirms.find(firm => firm.norm.startsWith(sNorm) || sNorm.startsWith(firm.norm));
-            if (found) return found;
-
-            const sTokens = sNorm.split(' ').filter(t => t.length > 0);
-            if (sTokens.length >= 2) {
-                found = preparedFirms.find(firm => firm.tokens.length >= 2 && firm.tokens[0] === sTokens[0] && firm.tokens[1] === sTokens[1]);
-                if (found) return found;
-
-                found = preparedFirms.find(firm => sTokens.every(st => firm.tokens.includes(st)));
-                if (found) return found;
-            } else if (sTokens.length === 1 && sTokens[0].length >= 3) {
-                const matches = preparedFirms.filter(firm => firm.tokens.includes(sTokens[0]));
-                if (matches.length === 1) return matches[0];
-            }
-            return null;
-        };
-
-        // Her sağlık kaydını ait olduğu firmaya ata
+        // Her sağlık kaydını ait olduğu firmaya ata (Sadece onaylı eşleşmeler; otomatik tahmin yapılmaz)
         const firmHealthRecordsMap: Record<string, any[]> = {};
         const unmatchedHealthList: any[] = [];
 
         unbilledHealthRecords.forEach((s: any) => {
-            let matchedFirm = s.matchedFirmId ? preparedFirms.find(firm => firm.id === s.matchedFirmId) : null;
-            if (!matchedFirm) {
-                matchedFirm = matchReferral(s.sourceCompanyName);
+            // Kullanıcı bu tetkik firmasını "Bu Firmayı Atla" (IGNORE / __SKIP__) yaptıysa faturaya dahil edilmez
+            if (s.matchedFirmId === '__SKIP__' || s.matchedFirmId === 'IGNORE') {
+                return;
             }
+            const matchedFirm = s.matchedFirmId ? f.find(firm => firm.id === s.matchedFirmId) : null;
             if (matchedFirm) {
                 if (!firmHealthRecordsMap[matchedFirm.id]) firmHealthRecordsMap[matchedFirm.id] = [];
                 firmHealthRecordsMap[matchedFirm.id].push(s);
@@ -908,17 +851,27 @@ const Preparation = () => {
               <div className="flex items-center gap-2 text-amber-400 text-xs sm:text-sm">
                   <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
                   <span>
-                      <b>{unmatchedHealthRecords.length}</b> adet sevk tetkiki sistemdeki firmalarla otomatik eşleştirilemedi 
+                      <b>{unmatchedHealthRecords.length}</b> adet sevk tetkiki sistemdeki firmalarla henüz eşleştirilmedi 
                       ({formatCurrency(unmatchedHealthRecords.reduce((sum, r) => sum + (Number(r.amount) || 0), 0))}).
                   </span>
               </div>
-              <button 
-                  type="button" 
-                  onClick={() => setShowUnmatchedHealthModal(true)}
-                  className="text-xs bg-amber-600 hover:bg-amber-500 text-white font-semibold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shrink-0"
-              >
-                  Eşleştir & Faturaya Ekle
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                  <button 
+                      type="button" 
+                      onClick={() => navigate('/tetkik-mapping')}
+                      className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
+                  >
+                      <GitCompare className="w-3.5 h-3.5" />
+                      Tetkik Eşleştirme Sayfası
+                  </button>
+                  <button 
+                      type="button" 
+                      onClick={() => setShowUnmatchedHealthModal(true)}
+                      className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-2.5 py-1.5 rounded-lg transition-colors border border-slate-700"
+                  >
+                      Hızlı İncele
+                  </button>
+              </div>
           </div>
       )}
 
