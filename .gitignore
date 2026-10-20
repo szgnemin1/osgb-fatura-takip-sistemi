@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Production Build
+/build
+/dist
+/dist-ssr
+
+# Databases & Sensitive Data
+/db/*.sqlite*
+/db/*.json
+!/db/users.example.json
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+fatura-log.txt
+tetkik-log.txt
+
+# Submodules / Nested Projects (Managed in separate repositories)
+osgb-tetkik-takip/
+
+# Editor & OS files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

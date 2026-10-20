@@ -1,0 +1,31 @@
+
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>OSGB Fatura Takip</title>
+    <link rel="icon" type="image/svg+xml" href="logo.svg" />
+    
+    <!-- Tailwind CSS CDN (Hızlı stil yükleme için bırakıldı, Production'da build edilmelidir) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              slate: {
+                850: '#151F32',
+                900: '#0F172A',
+                950: '#020617',
+              }
+            }
+          }
+        }
+      }
+    </script>
+</head>
+  <body class="bg-slate-950 text-slate-200 antialiased overflow-hidden">
+    <div id="root" class="h-screen w-screen"></div>
+  </body>
+</html>
