@@ -115,7 +115,17 @@ async function reconcileWithTetkik() {
             } catch (_) {}
         }
 
-        // Kullanıcının kaydettiği kesin eşleştirmeleri çek (Otomatik tahmin yapılmaz!)
+        // Firmaları ID ve İsim bazlı eşleme için yükle
+        const fRows = await db.all("SELECT id, data FROM firms");
+        const firmNameMap = new Map();
+        for (const fr of fRows) {
+            try {
+                const f = JSON.parse(fr.data);
+                if (f.name) firmNameMap.set(f.name.trim().toLowerCase(), f.id);
+            } catch (_) {}
+        }
+
+        // Varsa önceden kaydedilmiş özel eşleştirmeler
         const mappingRows = await db.all("SELECT tetkik_name, target_firm_id FROM tetkik_firm_mappings");
         const mappingMap = new Map();
         for (const mr of mappingRows) {
@@ -132,7 +142,7 @@ async function reconcileWithTetkik() {
         for (const ref of invoiceReferrals) {
             const existingRow = await db.get(`SELECT id, data FROM external_health WHERE data LIKE ?`, `%"referralId":"${ref.id}"%`);
             const compName = (ref.employee?.company || '').trim();
-            const matchedFirmId = mappingMap.get(compName) || undefined;
+            const matchedFirmId = ref.companyId || (ref.employee && ref.employee.companyId) || firmNameMap.get(compName.toLowerCase()) || mappingMap.get(compName) || undefined;
             const refDate = new Date(ref.referralDate || Date.now());
 
             // Eğer eşleşen firmanın bu sevk tarihinden sonra/eşit kesilmiş faturası varsa geçmişte faturalandırılmış sayılır
@@ -916,15 +926,23 @@ app.post('/api/webhook/health-services', async (req, res) => {
             }
 
             if (ref.paymentMethod === 'INVOICE') {
+                const compName = (ref.employee?.company || '').trim();
+                let matchedFirmId = ref.companyId || (ref.employee && ref.employee.companyId);
+                if (!matchedFirmId && compName) {
+                    const firmRow = await db.get(`SELECT id FROM firms WHERE data LIKE ?`, `%"name":"${compName}"%`);
+                    if (firmRow) matchedFirmId = firmRow.id;
+                }
+
                 const existingRow = await db.get(`SELECT id, data FROM external_health WHERE data LIKE ?`, `%"referralId":"${ref.id}"%`);
                 if (existingRow) {
                     const existingData = JSON.parse(existingRow.data);
                     if (!existingData.isBilled) {
-                        existingData.sourceCompanyName = ref.employee?.company || existingData.sourceCompanyName || 'Bilinmiyor';
+                        existingData.sourceCompanyName = compName || existingData.sourceCompanyName || 'Bilinmiyor';
                         existingData.employeeName = ref.employee?.fullName || existingData.employeeName || 'Bilinmiyor';
                         existingData.exams = ref.exams || existingData.exams || [];
                         existingData.amount = Number(ref.totalPrice) || 0;
                         existingData.date = ref.referralDate || existingData.date;
+                        if (matchedFirmId) existingData.matchedFirmId = matchedFirmId;
                         await db.run('UPDATE external_health SET data = ? WHERE id = ?', JSON.stringify(existingData), existingRow.id);
                         changedCount++;
                     }
@@ -932,13 +950,14 @@ app.post('/api/webhook/health-services', async (req, res) => {
                     const newId = 'ext_' + Date.now() + Math.random().toString(36).substr(2, 5);
                     const item = {
                         id: newId,
-                        sourceCompanyName: ref.employee?.company || 'Bilinmiyor',
+                        sourceCompanyName: compName || 'Bilinmiyor',
                         employeeName: ref.employee?.fullName || 'Bilinmiyor',
                         exams: ref.exams || [],
                         amount: Number(ref.totalPrice) || 0,
                         date: ref.referralDate || new Date().toISOString(),
                         isBilled: false,
-                        referralId: ref.id
+                        referralId: ref.id,
+                        matchedFirmId: matchedFirmId
                     };
                     await db.run('INSERT INTO external_health (id, data) VALUES (?, ?)', newId, JSON.stringify(item));
                     changedCount++;

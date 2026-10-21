@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
-import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare } from 'lucide-react';
+import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 
@@ -858,18 +858,10 @@ const Preparation = () => {
               <div className="flex items-center gap-2 shrink-0">
                   <button 
                       type="button" 
-                      onClick={() => navigate('/tetkik-mapping')}
+                      onClick={() => setShowUnmatchedHealthModal(true)}
                       className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
                   >
-                      <GitCompare className="w-3.5 h-3.5" />
-                      Tetkik Eşleştirme Sayfası
-                  </button>
-                  <button 
-                      type="button" 
-                      onClick={() => setShowUnmatchedHealthModal(true)}
-                      className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-2.5 py-1.5 rounded-lg transition-colors border border-slate-700"
-                  >
-                      Hızlı İncele
+                      Firmaya Ata
                   </button>
               </div>
           </div>
