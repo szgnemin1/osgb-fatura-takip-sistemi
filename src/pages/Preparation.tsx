@@ -2,8 +2,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
-import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network } from 'lucide-react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare, Download, Loader2, CheckCircle2, Building2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 
 const Preparation = () => {
@@ -31,82 +31,286 @@ const Preparation = () => {
   const [showUnmatchedHealthModal, setShowUnmatchedHealthModal] = useState(false);
   const [selectedHealthMapping, setSelectedHealthMapping] = useState<Record<string, string>>({});
 
+  // Sevk Aktarım Tarih & İşlem State'leri
+  const [tetkikStartDate, setTetkikStartDate] = useState(() => {
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const y = firstDay.getFullYear();
+    const m = String(firstDay.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}-01`;
+  });
+  const [tetkikEndDate, setTetkikEndDate] = useState(() => {
+    const now = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const y = lastDay.getFullYear();
+    const m = String(lastDay.getMonth() + 1).padStart(2, '0');
+    const d = String(lastDay.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  });
+  const [isSyncingSevkler, setIsSyncingSevkler] = useState(false);
+
+  const loadData = React.useCallback(() => {
+    const f = db.getFirms();
+    setFirms(f);
+    setGlobalSettings(db.getGlobalSettings());
+    
+    const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s:any) => !s.isBilled) : [];
+    
+    let saved = db.getPreparationItems();
+    if (!Array.isArray(saved)) saved = [];
+    
+    const initialItems: Record<string, PreparationItem> = {};
+    const transactions = db.getTransactions ? db.getTransactions() : [];
+
+    // Halihazırda PENDING (bekleyen taslak) faturalara kilitlenmiş sağlık tetkiklerini bul
+    const lockedHealthRecordIds = new Set<string>();
+    transactions.forEach((t: any) => {
+        if (t.status === 'PENDING' && t.calculatedDetails?.externalHealthRecordIds) {
+            t.calculatedDetails.externalHealthRecordIds.forEach((id: string) => lockedHealthRecordIds.add(id));
+        }
+    });
+
+    // Faturalandırılmamış ve bekleyen faturaya henüz bağlanmamış sağlık hizmetleri
+    const unbilledHealthRecords = extHealth.filter((s: any) => !s.isBilled && !lockedHealthRecordIds.has(s.id));
+
+    // Her sağlık kaydını ait olduğu firmaya ata
+    const firmHealthRecordsMap: Record<string, any[]> = {};
+    const unmatchedHealthList: any[] = [];
+
+    unbilledHealthRecords.forEach((s: any) => {
+        if (s.matchedFirmId === '__SKIP__' || s.matchedFirmId === 'IGNORE') {
+            return;
+        }
+        const matchedFirm = s.matchedFirmId ? f.find(firm => firm.id === s.matchedFirmId) : null;
+        if (matchedFirm) {
+            if (!firmHealthRecordsMap[matchedFirm.id]) firmHealthRecordsMap[matchedFirm.id] = [];
+            firmHealthRecordsMap[matchedFirm.id].push(s);
+        } else {
+            unmatchedHealthList.push(s);
+        }
+    });
+    setUnmatchedHealthRecords(unmatchedHealthList);
+
+    f.forEach(firm => {
+      const unbilledForFirm = firmHealthRecordsMap[firm.id] || [];
+      const totalHealthDebt = unbilledForFirm.reduce((acc: number, curr:any) => acc + (Number(curr.amount) || 0), 0);
+      const extIds = unbilledForFirm.map((s:any) => s.id);
+
+      const existing = saved.find((s: any) => s && s.firmId === firm.id);
+      
+      let finalExtraAmount = 0;
+      if (extIds.length > 0) {
+          finalExtraAmount = totalHealthDebt;
+      } else if (existing && (!existing.externalHealthRecordIds || existing.externalHealthRecordIds.length === 0)) {
+          finalExtraAmount = Number(existing.extraItemAmount) || 0;
+      } else {
+          finalExtraAmount = 0;
+      }
+
+      initialItems[firm.id] = { 
+        firmId: firm.id, 
+        currentEmployeeCount: existing ? existing.currentEmployeeCount : (Number(firm.basePersonLimit) || 0), 
+        extraItemAmount: finalExtraAmount, 
+        addYearlyFee: existing ? existing.addYearlyFee : false,
+        externalHealthRecordIds: extIds
+      };
+    });
+    setItems(initialItems);
+  }, []);
+
   useEffect(() => {
-    const loadData = async () => {
-        // Veri App.tsx tarafından db_updated ile zaten güncellenir. Sadece localden okuyoruz.
-        const f = db.getFirms();
-        setFirms(f);
-        setGlobalSettings(db.getGlobalSettings());
-        
-        const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s:any) => !s.isBilled) : [];
-        
-        let saved = db.getPreparationItems();
-        if (!Array.isArray(saved)) saved = [];
-        
-        const initialItems: Record<string, PreparationItem> = {};
-        const transactions = db.getTransactions ? db.getTransactions() : [];
-
-        // Halihazırda PENDING (bekleyen taslak) faturalara kilitlenmiş sağlık tetkiklerini bul
-        const lockedHealthRecordIds = new Set<string>();
-        transactions.forEach((t: any) => {
-            if (t.status === 'PENDING' && t.calculatedDetails?.externalHealthRecordIds) {
-                t.calculatedDetails.externalHealthRecordIds.forEach((id: string) => lockedHealthRecordIds.add(id));
-            }
-        });
-
-        // Faturalandırılmamış ve bekleyen faturaya henüz bağlanmamış sağlık hizmetleri
-        const unbilledHealthRecords = extHealth.filter((s: any) => !s.isBilled && !lockedHealthRecordIds.has(s.id));
-
-        // Her sağlık kaydını ait olduğu firmaya ata (Sadece onaylı eşleşmeler; otomatik tahmin yapılmaz)
-        const firmHealthRecordsMap: Record<string, any[]> = {};
-        const unmatchedHealthList: any[] = [];
-
-        unbilledHealthRecords.forEach((s: any) => {
-            // Kullanıcı bu tetkik firmasını "Bu Firmayı Atla" (IGNORE / __SKIP__) yaptıysa faturaya dahil edilmez
-            if (s.matchedFirmId === '__SKIP__' || s.matchedFirmId === 'IGNORE') {
-                return;
-            }
-            const matchedFirm = s.matchedFirmId ? f.find(firm => firm.id === s.matchedFirmId) : null;
-            if (matchedFirm) {
-                if (!firmHealthRecordsMap[matchedFirm.id]) firmHealthRecordsMap[matchedFirm.id] = [];
-                firmHealthRecordsMap[matchedFirm.id].push(s);
-            } else {
-                unmatchedHealthList.push(s);
-            }
-        });
-        setUnmatchedHealthRecords(unmatchedHealthList);
-
-        f.forEach(firm => {
-          // Bulunan ekstra tutarları topla (Sevk Sisteminden Gelen Fatura Kesilecekler)
-          const unbilledForFirm = firmHealthRecordsMap[firm.id] || [];
-          const totalHealthDebt = unbilledForFirm.reduce((acc: number, curr:any) => acc + (Number(curr.amount) || 0), 0);
-          const extIds = unbilledForFirm.map((s:any) => s.id);
-
-          const existing = saved.find((s: any) => s && s.firmId === firm.id);
-          
-          let finalExtraAmount = 0;
-          if (existing && existing.extraItemAmount !== undefined) {
-              finalExtraAmount = Math.max(Number(existing.extraItemAmount) || 0, totalHealthDebt);
-          } else {
-              finalExtraAmount = totalHealthDebt;
-          }
-
-          initialItems[firm.id] = { 
-            firmId: firm.id, 
-            currentEmployeeCount: existing ? existing.currentEmployeeCount : (Number(firm.basePersonLimit) || 0), 
-            extraItemAmount: finalExtraAmount, 
-            addYearlyFee: existing ? existing.addYearlyFee : false,
-            externalHealthRecordIds: extIds
-          };
-        });
-        setItems(initialItems);
-    };
     loadData();
     const unsubscribe = db.subscribe(() => {
         loadData();
     });
     return () => unsubscribe();
-  }, []);
+  }, [loadData]);
+
+  // Eşleşmeyen Sevkleri Firma Bazında Grupla
+  const unmatchedCompanyGroups = React.useMemo(() => {
+    const map = new Map<string, { companyName: string; referrals: any[]; totalAmount: number }>();
+    unmatchedHealthRecords.forEach(rec => {
+      const name = (rec.sourceCompanyName || 'Bilinmeyen Firma').trim();
+      if (!map.has(name)) {
+        map.set(name, { companyName: name, referrals: [], totalAmount: 0 });
+      }
+      const group = map.get(name)!;
+      group.referrals.push(rec);
+      group.totalAmount += Number(rec.amount) || 0;
+    });
+    return Array.from(map.values()).sort((a, b) => b.totalAmount - a.totalAmount);
+  }, [unmatchedHealthRecords]);
+
+  const unmatchedHealthTotal = React.useMemo(() => {
+    return unmatchedHealthRecords.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+  }, [unmatchedHealthRecords]);
+
+  // İsme göre akıllı eşleştirme önerisi
+  const normalizeName = (name: string) => {
+    return (name || '')
+      .toLowerCase()
+      .replace(/ı/g, 'i')
+      .replace(/ğ/g, 'g')
+      .replace(/ü/g, 'u')
+      .replace(/ş/g, 's')
+      .replace(/ö/g, 'o')
+      .replace(/ç/g, 'c')
+      .replace(/[^a-z0-9]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const findBestFirmMatch = (tetkikName: string, allFirms: Firm[]): string => {
+    const normTetkik = normalizeName(tetkikName);
+    if (!normTetkik) return '';
+
+    const exact = allFirms.find(f => normalizeName(f.name) === normTetkik);
+    if (exact) return exact.id;
+
+    const cleanTetkik = normTetkik
+      .replace(/\b(a s|as|ltd|sti|san|tic|ins|ve|ticaret|sanayi|limited|sirketi)\b/g, '')
+      .trim();
+
+    if (cleanTetkik.length >= 3) {
+      const partial = allFirms.find(f => {
+        const cleanF = normalizeName(f.name)
+          .replace(/\b(a s|as|ltd|sti|san|tic|ins|ve|ticaret|sanayi|limited|sirketi)\b/g, '')
+          .trim();
+        return cleanF.includes(cleanTetkik) || cleanTetkik.includes(cleanF);
+      });
+      if (partial) return partial.id;
+    }
+    return '';
+  };
+
+  // Eşleşmeyen firmalar açıldığında önerileri otomatik ata
+  useEffect(() => {
+    if (unmatchedCompanyGroups.length > 0 && firms.length > 0) {
+      setSelectedHealthMapping(prev => {
+        const updated = { ...prev };
+        let hasChanges = false;
+        unmatchedCompanyGroups.forEach(group => {
+          if (!updated[group.companyName]) {
+            const suggested = findBestFirmMatch(group.companyName, firms);
+            if (suggested) {
+              updated[group.companyName] = suggested;
+              hasChanges = true;
+            }
+          }
+        });
+        return hasChanges ? updated : prev;
+      });
+    }
+  }, [unmatchedCompanyGroups, firms]);
+
+  // Sevk Aktarım Barı İstatistiği
+  const { totalActiveHealthCount, totalActiveHealthTotal } = React.useMemo(() => {
+    const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s:any) => !s.isBilled) : [];
+    const matched = extHealth.filter((s: any) => s.matchedFirmId && s.matchedFirmId !== '__SKIP__' && s.matchedFirmId !== 'IGNORE');
+    const total = matched.reduce((sum: number, r: any) => sum + (Number(r.amount) || 0), 0);
+    return { totalActiveHealthCount: matched.length, totalActiveHealthTotal: total };
+  }, [items]);
+
+  // Sevkleri Seçilen Tarih Aralığına Göre Senkronize Et
+  const handleSyncSevkler = async () => {
+    setIsSyncingSevkler(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch('/api/tetkik/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          startDate: tetkikStartDate,
+          endDate: tetkikEndDate,
+          purgeOtherUnbilled: true
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Sevkler aktarılamadı');
+      }
+
+      await db.initData();
+      loadData();
+
+      // Güncel eşleşmeyen kayıtları kontrol et
+      const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s: any) => !s.isBilled) : [];
+      const currentFirms = db.getFirms ? db.getFirms() : [];
+      const remainingUnmatched = extHealth.filter((s: any) => {
+        if (s.matchedFirmId === '__SKIP__' || s.matchedFirmId === 'IGNORE') return false;
+        return !s.matchedFirmId || !currentFirms.some(f => f.id === s.matchedFirmId);
+      });
+
+      if (remainingUnmatched.length > 0) {
+        setShowUnmatchedHealthModal(true);
+      } else {
+        alert(`✅ ${data.totalFound || 0} adet faturalı sevk başarıyla aktarıldı ve carilerle eşleştirildi.`);
+      }
+    } catch (e: any) {
+      console.error('Sevk aktarım hatası:', e);
+      alert('Sevk aktarımı sırasında bir hata oluştu: ' + (e.message || 'Bilinmeyen hata'));
+    } finally {
+      setIsSyncingSevkler(false);
+    }
+  };
+
+  // Eşleştirmeleri Kalıcı Olarak Kaydet ve Sevkleri Güncelle
+  const handleSaveHealthMappings = async () => {
+    const entries = Object.entries(selectedHealthMapping).filter(([_, targetId]) => Boolean(targetId));
+    if (entries.length === 0) {
+      alert("Lütfen en az bir firma için eşleştirme seçin.");
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      const mappingsPayload = entries.map(([tetkikName, targetFirmId]) => ({
+        tetkikName,
+        targetFirmId
+      }));
+
+      const saveRes = await fetch('/api/tetkik/save-mappings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ mappings: mappingsPayload })
+      });
+
+      const saveData = await saveRes.json();
+      if (!saveRes.ok || !saveData.success) {
+        throw new Error(saveData.error || 'Eşleştirmeler kaydedilemedi');
+      }
+
+      // Sevkleri güncel eşleştirmeyle senkronize et
+      await fetch('/api/tetkik/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          startDate: tetkikStartDate,
+          endDate: tetkikEndDate,
+          purgeOtherUnbilled: true
+        })
+      });
+
+      await db.initData();
+      loadData();
+
+      setShowUnmatchedHealthModal(false);
+      alert(`✅ ${entries.length} firma eşleştirmesi kalıcı olarak kaydedildi ve sevk tutarları carilere eklendi.`);
+    } catch (e: any) {
+      console.error('Eşleştirme kaydetme hatası:', e);
+      alert('Eşleştirme kaydedilemedi: ' + (e.message || 'Bilinmeyen hata'));
+    }
+  };
 
   const handleUpdate = (firmId: string, field: keyof PreparationItem, value: any) => {
     setItems(prev => { 
@@ -845,33 +1049,116 @@ const Preparation = () => {
            </div>
       </div>
 
-      {/* EŞLEŞMEYEN SEVK TETKİKLERİ BİLDİRİM ÇUBUĞU */}
-      {unmatchedHealthRecords.length > 0 && (
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 bg-amber-500/10 border border-amber-500/30 p-2.5 rounded-xl shadow-sm">
-              <div className="flex items-center gap-2 text-amber-400 text-xs sm:text-sm">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-                  <span>
-                      <b>{unmatchedHealthRecords.length}</b> adet sevk tetkiki sistemdeki firmalarla henüz eşleştirilmedi 
-                      ({formatCurrency(unmatchedHealthRecords.reduce((sum, r) => sum + (Number(r.amount) || 0), 0))}).
+      {/* SEVK / TETKİK AKTARIM BARI (İNCE & ENTEGRE) */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 bg-slate-900 border border-slate-700/80 p-2 sm:px-3 rounded-xl shadow-md">
+          {/* Sol: Başlık, Tarih Seçici ve Aktar Butonu */}
+          <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 shrink-0 text-slate-200">
+                  <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-xs font-bold tracking-wide flex items-center gap-1">
+                      <GitCompare className="w-4 h-4 text-emerald-400" />
+                      Sevk Aktarımı:
                   </span>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                  <Link
-                      to="/tetkik-mapping"
-                      className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-3 py-1.5 rounded-lg border border-slate-700 transition-colors flex items-center gap-1"
-                  >
-                      Dönem & Eşleştirme Ekranı →
-                  </Link>
+
+              <div className="flex items-center gap-1 bg-slate-800/90 border border-slate-700 rounded-lg px-2 py-1">
+                  <input 
+                      type="date"
+                      value={tetkikStartDate}
+                      onChange={(e) => setTetkikStartDate(e.target.value)}
+                      className="bg-transparent text-xs text-white outline-none cursor-pointer"
+                      title="Başlangıç Tarihi"
+                  />
+                  <span className="text-slate-500 text-xs px-0.5">-</span>
+                  <input 
+                      type="date"
+                      value={tetkikEndDate}
+                      onChange={(e) => setTetkikEndDate(e.target.value)}
+                      className="bg-transparent text-xs text-white outline-none cursor-pointer"
+                      title="Bitiş Tarihi"
+                  />
+              </div>
+
+              <div className="flex items-center gap-1">
                   <button 
-                      type="button" 
-                      onClick={() => setShowUnmatchedHealthModal(true)}
-                      className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
+                      type="button"
+                      onClick={() => {
+                          const now = new Date();
+                          const y = now.getFullYear();
+                          const m = String(now.getMonth() + 1).padStart(2, '0');
+                          const lastD = String(new Date(y, now.getMonth() + 1, 0).getDate()).padStart(2, '0');
+                          setTetkikStartDate(`${y}-${m}-01`);
+                          setTetkikEndDate(`${y}-${m}-${lastD}`);
+                      }}
+                      className="text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition-colors"
                   >
-                      Hızlı Firmaya Ata
+                      Bu Ay
+                  </button>
+                  <button 
+                      type="button"
+                      onClick={() => {
+                          const now = new Date();
+                          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                          const y = prev.getFullYear();
+                          const m = String(prev.getMonth() + 1).padStart(2, '0');
+                          const lastD = String(new Date(y, prev.getMonth() + 1, 0).getDate()).padStart(2, '0');
+                          setTetkikStartDate(`${y}-${m}-01`);
+                          setTetkikEndDate(`${y}-${m}-${lastD}`);
+                      }}
+                      className="text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded border border-slate-700 transition-colors"
+                  >
+                      Geçen Ay
                   </button>
               </div>
+
+              <button
+                  type="button"
+                  disabled={isSyncingSevkler}
+                  onClick={handleSyncSevkler}
+                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-all shrink-0"
+              >
+                  {isSyncingSevkler ? (
+                      <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Aktarılıyor...</span>
+                      </>
+                  ) : (
+                      <>
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Sevkleri Aktar</span>
+                      </>
+                  )}
+              </button>
           </div>
-      )}
+
+          {/* Sağ: Durum & Eşleştirme Bildirimi */}
+          <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+              {unmatchedHealthRecords.length > 0 ? (
+                  <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
+                      <span className="text-xs text-amber-400 font-medium flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                          <b>{unmatchedCompanyGroups.length}</b> firma ({unmatchedHealthRecords.length} sevk - {formatCurrency(unmatchedHealthTotal)}) eşleşme bekliyor
+                      </span>
+                      <button
+                          type="button"
+                          onClick={() => setShowUnmatchedHealthModal(true)}
+                          className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-2 py-0.5 rounded transition-colors"
+                      >
+                          Eşleştir
+                      </button>
+                  </div>
+              ) : (
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-800/60 px-2.5 py-1 rounded-lg border border-slate-800">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>
+                          {totalActiveHealthCount > 0 
+                              ? `${totalActiveHealthCount} sevk carilere bağlandı (${formatCurrency(totalActiveHealthTotal)})` 
+                              : 'Dönem seçip aktarabilirsiniz'}
+                      </span>
+                  </div>
+              )}
+          </div>
+      </div>
 
       <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
         <div className="overflow-hidden">
@@ -1143,87 +1430,107 @@ const Preparation = () => {
           </div>
       )}
 
-      {/* EŞLEŞMEYEN SEVK TETKİKLERİ MODALI */}
+      {/* SEVK / TETKİK CARİ EŞLEŞTİRME MODALI (FİRMA BAZLI) */}
       {showUnmatchedHealthModal && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2">
-              <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col max-h-[90vh]">
-                  <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-900/50 rounded-t-xl">
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-3 animate-fade-in">
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl flex flex-col max-h-[88vh] overflow-hidden">
+                  <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
                       <div>
-                          <h3 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                              <AlertCircle className="w-6 h-6 text-amber-500" /> Eşleşmeyen Sevk Tetkikleri
+                          <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                              <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />
+                              <span>Tetkik / Sevk Firma Eşleştirmesi</span>
                           </h3>
-                          <p className="text-sm text-slate-400 mt-1">
-                              Aşağıdaki {unmatchedHealthRecords.length} tetkik kaydı Fatura Takip sistemindeki firmalarla otomatik eşleşmedi. İlgili firmayı seçerek faturaya dahil edebilirsiniz:
+                          <p className="text-xs text-slate-400 mt-1">
+                              Seçilen dönemde Tetkik Takip sisteminden gelen <b>{unmatchedCompanyGroups.length}</b> firmanın ({unmatchedHealthRecords.length} sevk) Fatura Takip cari karşılığı henüz belirlenmedi. Lütfen eşleştirmeyi yapın:
                           </p>
                       </div>
-                      <button onClick={() => setShowUnmatchedHealthModal(false)} className="text-slate-500 hover:text-white transition-colors">
-                          <XCircle className="w-6 h-6" />
-                      </button>
-                  </div>
-
-                  <div className="p-6 overflow-y-auto flex-1 space-y-3">
-                      {unmatchedHealthRecords.map((rec) => (
-                          <div key={rec.id} className="bg-slate-900 border border-slate-700 p-3 rounded-lg flex flex-col md:flex-row gap-3 justify-between items-start md:items-center">
-                              <div className="space-y-1">
-                                  <div className="text-sm font-bold text-slate-200 flex items-center gap-2">
-                                      <span>{rec.sourceCompanyName || 'Bilinmiyor'}</span>
-                                      <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono">
-                                          {formatCurrency(Number(rec.amount) || 0)}
-                                      </span>
-                                  </div>
-                                  <div className="text-xs text-slate-400">
-                                      Çalışan: <span className="text-slate-200 font-medium">{rec.employeeName}</span> • Tarih: {new Date(rec.date).toLocaleDateString('tr-TR')}
-                                  </div>
-                                  {rec.exams && rec.exams.length > 0 && (
-                                      <div className="text-[10px] text-slate-500 truncate max-w-md">
-                                          Tetkikler: {rec.exams.join(', ')}
-                                      </div>
-                                  )}
-                              </div>
-                              <div className="flex items-center gap-2 w-full md:w-auto">
-                                  <select 
-                                      className="bg-slate-800 border border-slate-600 text-xs rounded-lg px-3 py-2 text-white outline-none focus:border-blue-500 w-full md:w-64"
-                                      value={selectedHealthMapping[rec.id] || ""}
-                                      onChange={(e) => setSelectedHealthMapping(prev => ({...prev, [rec.id]: e.target.value}))}
-                                  >
-                                      <option value="">-- Firma Seçin --</option>
-                                      {firms.filter(f => !f.parentFirmId).map(f => (
-                                          <option key={f.id} value={f.id}>{f.name}</option>
-                                      ))}
-                                  </select>
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-
-                  <div className="p-6 border-t border-slate-700 flex justify-end gap-3 bg-slate-900/50 rounded-b-xl">
-                      <button onClick={() => setShowUnmatchedHealthModal(false)} className="px-4 py-2 text-slate-400 hover:text-white transition-colors">Kapat</button>
                       <button 
-                          onClick={async () => {
-                              const mappings = Object.entries(selectedHealthMapping).filter(([_, fId]) => Boolean(fId));
-                              if (mappings.length === 0) {
-                                  alert("Lütfen en az bir tetkik için firma seçin.");
-                                  return;
-                              }
-                              
-                              const extServices = db.getExternalHealthServices ? db.getExternalHealthServices() : [];
-                              const updatedServices = extServices.map((s: any) => {
-                                  if (selectedHealthMapping[s.id]) {
-                                      return { ...s, matchedFirmId: selectedHealthMapping[s.id] };
-                                  }
-                                  return s;
-                              });
-
-                              localStorage.setItem('osgb_external_health', JSON.stringify(updatedServices));
-                              db.forceSync();
-                              setShowUnmatchedHealthModal(false);
-                              setSelectedHealthMapping({});
-                              alert(`${mappings.length} adet tetkik seçilen firmalara başarıyla atandı.`);
-                          }}
-                          className="px-6 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors"
+                          onClick={() => setShowUnmatchedHealthModal(false)} 
+                          className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
                       >
-                          Seçimleri Uygula
+                          <XCircle className="w-5 h-5" />
                       </button>
+                  </div>
+
+                  <div className="p-5 overflow-y-auto flex-1 space-y-3">
+                      {unmatchedCompanyGroups.map((group) => {
+                          const isAssigned = Boolean(selectedHealthMapping[group.companyName]);
+                          const isIgnored = selectedHealthMapping[group.companyName] === 'IGNORE';
+                          const sampleEmployees = group.referrals.slice(0, 3).map(r => r.employeeName).filter(Boolean);
+
+                          return (
+                              <div 
+                                  key={group.companyName} 
+                                  className={`p-3.5 rounded-xl border transition-all ${
+                                      isIgnored 
+                                          ? 'bg-slate-900/50 border-slate-800 opacity-60' 
+                                          : isAssigned 
+                                              ? 'bg-slate-800/80 border-emerald-500/40 shadow-sm' 
+                                              : 'bg-slate-800/50 border-amber-500/30'
+                                  }`}
+                              >
+                                  <div className="flex flex-col sm:flex-row gap-3 justify-between items-start sm:items-center">
+                                      <div className="space-y-1 min-w-0">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                              <Building2 className="w-4 h-4 text-amber-400 shrink-0" />
+                                              <span className="text-sm font-bold text-slate-100 truncate" title={group.companyName}>
+                                                  {group.companyName}
+                                              </span>
+                                              <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono font-semibold">
+                                                  {formatCurrency(group.totalAmount)}
+                                              </span>
+                                              <span className="text-[11px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded">
+                                                  {group.referrals.length} Sevk
+                                              </span>
+                                          </div>
+                                          {sampleEmployees.length > 0 && (
+                                              <div className="text-[11px] text-slate-400">
+                                                  Çalışanlar: <span className="text-slate-300">{sampleEmployees.join(', ')}</span>
+                                                  {group.referrals.length > 3 && ` (+${group.referrals.length - 3} kişi daha)`}
+                                              </div>
+                                          )}
+                                      </div>
+
+                                      <div className="w-full sm:w-auto shrink-0 flex items-center gap-2">
+                                          <select 
+                                              className="bg-slate-950 border border-slate-700 text-xs rounded-lg px-3 py-2 text-white outline-none focus:border-blue-500 w-full sm:w-72"
+                                              value={selectedHealthMapping[group.companyName] || ""}
+                                              onChange={(e) => setSelectedHealthMapping(prev => ({ ...prev, [group.companyName]: e.target.value }))}
+                                          >
+                                              <option value="">-- Fatura Takip Cari Firmasını Seçin --</option>
+                                              <option value="IGNORE">🚫 Bu Firmayı Atla (Faturaya Dahil Etme)</option>
+                                              <optgroup label="Kayıtlı Firmalar">
+                                                  {firms.filter(f => !f.parentFirmId).sort((a,b) => a.name.localeCompare(b.name, 'tr')).map(f => (
+                                                      <option key={f.id} value={f.id}>{f.name}</option>
+                                                  ))}
+                                              </optgroup>
+                                          </select>
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
+
+                  <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row justify-between items-center gap-3 bg-slate-950/60">
+                      <span className="text-xs text-slate-400 text-center sm:text-left">
+                          * Yapılan eşleştirmeler kalıcı olarak kaydedilir, sonraki aylarda tekrar sorulmaz.
+                      </span>
+                      <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                          <button 
+                              onClick={() => setShowUnmatchedHealthModal(false)} 
+                              className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                          >
+                              İptal
+                          </button>
+                          <button 
+                              onClick={handleSaveHealthMappings}
+                              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-emerald-900/30 flex items-center gap-1.5"
+                          >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>Eşleştirmeleri Kaydet ve Aktar</span>
+                          </button>
+                      </div>
                   </div>
               </div>
           </div>
