@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
 import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 
 const Preparation = () => {
@@ -856,12 +856,18 @@ const Preparation = () => {
                   </span>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                  <Link
+                      to="/tetkik-mapping"
+                      className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-3 py-1.5 rounded-lg border border-slate-700 transition-colors flex items-center gap-1"
+                  >
+                      Dönem & Eşleştirme Ekranı →
+                  </Link>
                   <button 
                       type="button" 
                       onClick={() => setShowUnmatchedHealthModal(true)}
                       className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 shadow-sm"
                   >
-                      Firmaya Ata
+                      Hızlı Firmaya Ata
                   </button>
               </div>
           </div>

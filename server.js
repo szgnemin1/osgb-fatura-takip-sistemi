@@ -83,8 +83,8 @@ function normalizeCompanyName(name) {
     return withoutSuffix.length >= 2 ? withoutSuffix : cleaned;
 }
 
-// Tetkik Takip Eşitleme (Otomatik Tahmin Yok - Sadece Kullanıcının Eşleştirdiği Firmalar)
-async function reconcileWithTetkik() {
+// Tetkik Takip Eşitleme (Tarih Aralıklı & Yarı Manuel Seçim Desteği)
+async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purgeOtherUnbilled = false) {
     try {
         let tetkikDataPath = path.join(__dirname, 'osgb-tetkik-takip', 'global_data.json');
         if (!fs.existsSync(tetkikDataPath)) {
@@ -93,11 +93,47 @@ async function reconcileWithTetkik() {
         if (!fs.existsSync(tetkikDataPath)) {
             tetkikDataPath = 'C:\\Users\\emins\\Downloads\\osgb-tetkik-takip\\global_data.json';
         }
-        if (!fs.existsSync(tetkikDataPath)) return;
+        if (!fs.existsSync(tetkikDataPath)) return { success: false, reason: 'Tetkik veri dosyası bulunamadı' };
         
         const tetkikRaw = JSON.parse(fs.readFileSync(tetkikDataPath, 'utf8'));
         const referrals = tetkikRaw.referrals || [];
-        const invoiceReferrals = referrals.filter(r => r && r.paymentMethod === 'INVOICE' && !r.isExternalRecord);
+
+        let start = startDateStr ? new Date(startDateStr) : null;
+        if (start && !isNaN(start.getTime())) start.setHours(0, 0, 0, 0);
+        else start = null;
+
+        let end = endDateStr ? new Date(endDateStr) : null;
+        if (end && !isNaN(end.getTime())) end.setHours(23, 59, 59, 999);
+        else end = null;
+
+        // Sadece faturalı ve seçilen tarih aralığındaki sevkleri filtrele
+        const invoiceReferrals = referrals.filter(r => {
+            if (!r || r.paymentMethod !== 'INVOICE' || r.isExternalRecord) return false;
+            if (start || end) {
+                const rDate = new Date(r.referralDate || Date.now());
+                if (start && rDate < start) return false;
+                if (end && rDate > end) return false;
+            }
+            return true;
+        });
+
+        // Eğer purgeOtherUnbilled istenmişse (veya tarih aralığı verilmişse), 
+        // aralık dışındaki henüz faturalandırılmamış sevk kayıtlarını temizle
+        if (purgeOtherUnbilled) {
+            const allHealth = await db.all("SELECT id, data FROM external_health");
+            for (const row of allHealth) {
+                try {
+                    const item = JSON.parse(row.data);
+                    if (!item.isBilled) {
+                        const itemDate = new Date(item.date || Date.now());
+                        const inRange = (!start || itemDate >= start) && (!end || itemDate <= end);
+                        if (!inRange) {
+                            await db.run("DELETE FROM external_health WHERE id = ?", row.id);
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
         
         // Geçmiş onaylı veya kayıtlı faturaların en son tarihini bul
         const txRows = await db.all("SELECT data FROM transactions WHERE data LIKE '%FATURA%'");
@@ -142,7 +178,7 @@ async function reconcileWithTetkik() {
         for (const ref of invoiceReferrals) {
             const existingRow = await db.get(`SELECT id, data FROM external_health WHERE data LIKE ?`, `%"referralId":"${ref.id}"%`);
             const compName = (ref.employee?.company || '').trim();
-            const matchedFirmId = ref.companyId || (ref.employee && ref.employee.companyId) || firmNameMap.get(compName.toLowerCase()) || mappingMap.get(compName) || undefined;
+            const matchedFirmId = ref.companyId || (ref.employee && ref.employee.companyId) || mappingMap.get(compName) || firmNameMap.get(compName.toLowerCase()) || undefined;
             const refDate = new Date(ref.referralDate || Date.now());
 
             // Eğer eşleşen firmanın bu sevk tarihinden sonra/eşit kesilmiş faturası varsa geçmişte faturalandırılmış sayılır
@@ -200,9 +236,17 @@ async function reconcileWithTetkik() {
         if (syncedCount > 0) {
             console.log(`[Tetkik Eşitleme] ${syncedCount} adet tetkik kaydı Fatura Takip ile güncellendi.`);
         }
+        return {
+            success: true,
+            totalFound: invoiceReferrals.length,
+            syncedCount,
+            startDate: startDateStr,
+            endDate: endDateStr
+        };
     } catch (e) {
         try { await db.run('ROLLBACK'); } catch (_) {}
         console.error('[Tetkik Eşitleme] Hata:', e);
+        return { success: false, error: e.message };
     }
 }
 
@@ -216,7 +260,14 @@ async function reconcileWithTetkik() {
     await db.run('CREATE TABLE IF NOT EXISTS invoice_batches (id TEXT PRIMARY KEY, data TEXT);');
     await db.run('CREATE TABLE IF NOT EXISTS tetkik_firm_mappings (id TEXT PRIMARY KEY, tetkik_name TEXT UNIQUE, target_firm_id TEXT, updated_at TEXT);');
     console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu Aktif).");
-    await reconcileWithTetkik();
+    // Sunucu başlangıcında cari ayın sevklerini senkronize et (eski aylardan çöp veri çekmez)
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
+    const currentMonthStart = `${y}-${m}-01`;
+    const currentMonthEnd = `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
+    await reconcileWithTetkik(currentMonthStart, currentMonthEnd, true);
 })();
 
 // JWT Middleware
@@ -984,12 +1035,38 @@ app.post('/api/webhook/health-services', async (req, res) => {
 });
 
 // ==========================================
-// 6. TETKİK FİRMA EŞLEŞTİRME YÖNETİMİ
+// 6. TETKİK FİRMA EŞLEŞTİRME & DÖNEMSEL SEVK ÇEKME
 // ==========================================
 
-// 6.1 Tetkik Sistemindeki Firmaları ve Eşleşme Durumlarını Getir
+// 6.0 Tarih Aralığına Göre Tetkik / Sevkleri Çek & Senkronize Et
+app.post('/api/tetkik/sync', authenticateToken, async (req, res) => {
+    try {
+        const { startDate, endDate, purgeOtherUnbilled = true } = req.body;
+        const result = await reconcileWithTetkik(startDate, endDate, purgeOtherUnbilled);
+        io.emit('db_updated');
+        res.json({
+            success: true,
+            message: 'Sevkler seçilen tarih aralığına göre başarıyla eşitlendi.',
+            ...result
+        });
+    } catch (e) {
+        console.error('Tetkik sync error:', e);
+        res.status(500).json({ error: 'Sevk senkronizasyonu başarısız oldu: ' + e.message });
+    }
+});
+
+// 6.1 Tetkik Sistemindeki Firmaları ve Eşleşme Durumlarını Getir (Tarih Filtreli)
 app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
     try {
+        const { startDate, endDate } = req.query;
+        let start = startDate ? new Date(startDate) : null;
+        if (start && !isNaN(start.getTime())) start.setHours(0, 0, 0, 0);
+        else start = null;
+
+        let end = endDate ? new Date(endDate) : null;
+        if (end && !isNaN(end.getTime())) end.setHours(23, 59, 59, 999);
+        else end = null;
+
         let tetkikDataPath = path.join(__dirname, 'osgb-tetkik-takip', 'global_data.json');
         if (!fs.existsSync(tetkikDataPath)) {
             tetkikDataPath = path.join(__dirname, '..', 'osgb-tetkik-takip', 'global_data.json');
@@ -1042,10 +1119,20 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
             });
         }
 
-        // 2. Sevklerden gelen şirketler ve istatistikler
+        // 2. Sevklerden gelen şirketler ve istatistikler (Tarih Aralıklı)
+        let totalInRange = 0;
+        let totalAmountInRange = 0;
+
         for (const ref of referrals) {
             const compName = (ref.employee?.company || '').trim();
             if (!compName) continue;
+
+            // Tarih filtresi uygula
+            if (start || end) {
+                const rDate = new Date(ref.referralDate || Date.now());
+                if (start && rDate < start) continue;
+                if (end && rDate > end) continue;
+            }
 
             if (!compMap.has(compName)) {
                 compMap.set(compName, {
@@ -1070,6 +1157,8 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
             if (ref.paymentMethod === 'INVOICE' && !ref.isExternalRecord) {
                 item.unbilledReferrals++;
                 item.unbilledAmount += price;
+                totalInRange++;
+                totalAmountInRange += price;
             }
         }
 
@@ -1086,7 +1175,13 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
         res.json({
             success: true,
             tetkikCompanies: companiesList,
-            faturaFirms
+            faturaFirms,
+            dateRange: {
+                startDate: startDate || null,
+                endDate: endDate || null
+            },
+            totalReferralsInRange: totalInRange,
+            totalAmountInRange: totalAmountInRange
         });
     } catch (e) {
         console.error('Tetkik companies error:', e);

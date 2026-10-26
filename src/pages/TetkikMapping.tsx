@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import {
   GitCompare,
   Search,
@@ -9,7 +10,11 @@ import {
   Building2,
   Stethoscope,
   XCircle,
-  Sparkles
+  Sparkles,
+  Calendar,
+  ArrowRight,
+  RefreshCw,
+  Clock
 } from 'lucide-react';
 import { Firm } from '../types';
 
@@ -26,28 +31,48 @@ interface TetkikCompany {
   matchedFirmId: string;
 }
 
+const getInitialDates = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const lastDay = new Date(year, now.getMonth() + 1, 0).getDate();
+  return {
+    startDate: `${year}-${month}-01`,
+    endDate: `${year}-${month}-${String(lastDay).padStart(2, '0')}`
+  };
+};
+
 export const TetkikMapping: React.FC = () => {
+  const initial = useMemo(() => getInitialDates(), []);
+  const [startDate, setStartDate] = useState<string>(initial.startDate);
+  const [endDate, setEndDate] = useState<string>(initial.endDate);
+
   const [tetkikCompanies, setTetkikCompanies] = useState<TetkikCompany[]>([]);
   const [faturaFirms, setFaturaFirms] = useState<Firm[]>([]);
   const [mappings, setMappings] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [syncing, setSyncing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Filtreler
   const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<'ALL' | 'UNMATCHED' | 'MATCHED' | 'WITH_SEVK'>('ALL');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'UNMATCHED' | 'MATCHED' | 'WITH_SEVK'>('WITH_SEVK');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 30;
 
-  // Verileri Sunucudan Yükle
-  const loadData = async () => {
+  // Verileri Sunucudan Yükle (Tarih Filtresi İle)
+  const loadData = async (overrideStart = startDate, overrideEnd = endDate) => {
     setLoading(true);
     setError(null);
     try {
       const token = localStorage.getItem('auth_token');
-      const res = await fetch('/api/tetkik/companies', {
+      const params = new URLSearchParams();
+      if (overrideStart) params.append('startDate', overrideStart);
+      if (overrideEnd) params.append('endDate', overrideEnd);
+
+      const res = await fetch(`/api/tetkik/companies?${params.toString()}`, {
         headers: {
           Authorization: token ? `Bearer ${token}` : ''
         }
@@ -76,6 +101,44 @@ export const TetkikMapping: React.FC = () => {
     loadData();
   }, []);
 
+  // Hızlı Tarih Seçimleri
+  const handleQuickPreset = (preset: 'CURRENT_MONTH' | 'LAST_MONTH' | 'LAST_30_DAYS' | 'ALL') => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+
+    let s = '';
+    let e = '';
+
+    if (preset === 'CURRENT_MONTH') {
+      const mStr = String(month + 1).padStart(2, '0');
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      s = `${year}-${mStr}-01`;
+      e = `${year}-${mStr}-${String(lastDay).padStart(2, '0')}`;
+    } else if (preset === 'LAST_MONTH') {
+      const prevDate = new Date(year, month - 1, 1);
+      const prevYear = prevDate.getFullYear();
+      const prevMonth = prevDate.getMonth();
+      const mStr = String(prevMonth + 1).padStart(2, '0');
+      const lastDay = new Date(prevYear, prevMonth + 1, 0).getDate();
+      s = `${prevYear}-${mStr}-01`;
+      e = `${prevYear}-${mStr}-${String(lastDay).padStart(2, '0')}`;
+    } else if (preset === 'LAST_30_DAYS') {
+      const prior = new Date();
+      prior.setDate(prior.getDate() - 30);
+      s = prior.toISOString().split('T')[0];
+      e = now.toISOString().split('T')[0];
+    } else if (preset === 'ALL') {
+      s = '';
+      e = '';
+    }
+
+    setStartDate(s);
+    setEndDate(e);
+    setCurrentPage(1);
+    loadData(s, e);
+  };
+
   // Fatura firmaları arama haritası
   const firmMap = useMemo(() => {
     const map = new Map<string, Firm>();
@@ -91,12 +154,13 @@ export const TetkikMapping: React.FC = () => {
     }));
   };
 
-  // İstatistikler
+  // İstatistikler (Seçili Dönem İçin)
   const stats = useMemo(() => {
     let total = tetkikCompanies.length;
     let matched = 0;
     let unmatched = 0;
     let totalUnbilled = 0;
+    let totalReferralsCount = 0;
 
     tetkikCompanies.forEach(c => {
       const mapped = mappings[c.name];
@@ -106,9 +170,10 @@ export const TetkikMapping: React.FC = () => {
         unmatched++;
       }
       totalUnbilled += c.unbilledAmount || 0;
+      totalReferralsCount += c.unbilledReferrals || 0;
     });
 
-    return { total, matched, unmatched, totalUnbilled };
+    return { total, matched, unmatched, totalUnbilled, totalReferralsCount };
   }, [tetkikCompanies, mappings]);
 
   // Filtrelenmiş Liste
@@ -140,7 +205,55 @@ export const TetkikMapping: React.FC = () => {
     return filteredCompanies.slice(start, start + itemsPerPage);
   }, [filteredCompanies, currentPage]);
 
-  // Değişiklikleri Kaydet
+  // Seçilen Tarih Aralığındaki Sevkleri Faturaya Aktar
+  const handleSyncPeriod = async () => {
+    const dateRangeLabel = startDate && endDate 
+      ? `${startDate} ile ${endDate} arasındaki`
+      : startDate 
+      ? `${startDate} tarihinden sonraki`
+      : 'Tüm zamanlardaki';
+
+    if (!window.confirm(
+      `${dateRangeLabel} faturalı sevkler çekilecek ve eski aylara ait faturalandırılmamış kayıtlar temizlenecektir.\n\nİşlemi onaylıyor musunuz?`
+    )) {
+      return;
+    }
+
+    setSyncing(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch('/api/tetkik/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({
+          startDate: startDate || null,
+          endDate: endDate || null,
+          purgeOtherUnbilled: true
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Sevkler aktarılırken sunucu hatası oluştu');
+      }
+
+      const resJson = await res.json();
+      setSuccessMsg(`✅ Başarılı! ${resJson.syncedCount || 0} adet sevk Fatura Hazırlık sistemine aktarıldı. (Eski aylardan kalan sevkler temizlendi)`);
+      setTimeout(() => setSuccessMsg(null), 5000);
+      await loadData(startDate, endDate);
+    } catch (e: any) {
+      setError(e.message || 'Sevk aktarımı sırasında hata oluştu');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  // Eşleştirmeleri Kaydet ve Dönemi Faturaya Bağla
   const handleSave = async () => {
     setSaving(true);
     setSuccessMsg(null);
@@ -191,10 +304,24 @@ export const TetkikMapping: React.FC = () => {
         throw new Error('Eşleştirmeler kaydedilirken sunucu hatası oluştu');
       }
 
-      const resJson = await res.json();
-      setSuccessMsg(`Tüm eşleştirmeler başarıyla kaydedildi! (${resJson.updatedCount || 0} adet sevk faturaya bağlandı)`);
-      setTimeout(() => setSuccessMsg(null), 4000);
-      await loadData();
+      // 3. Seçili tarih aralığını senkronize et
+      await fetch('/api/tetkik/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({
+          startDate: startDate || null,
+          endDate: endDate || null,
+          purgeOtherUnbilled: true
+        })
+      });
+
+      await res.json();
+      setSuccessMsg(`Tüm eşleştirmeler kaydedildi ve seçilen döneme ait sevkler ilgili carilere başarıyla bağlandı!`);
+      setTimeout(() => setSuccessMsg(null), 5000);
+      await loadData(startDate, endDate);
     } catch (e: any) {
       setError(e.message || 'Kayıt sırasında hata oluştu');
     } finally {
@@ -211,7 +338,7 @@ export const TetkikMapping: React.FC = () => {
 
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-12 animate-in fade-in">
-      {/* ÜST BAŞLIK VE AKSİYONLAR */}
+      {/* ÜST BAŞLIK VE HIZLI GEÇİŞ */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-xl">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-400">
@@ -219,34 +346,124 @@ export const TetkikMapping: React.FC = () => {
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-              <span>Tetkik Firma Eşleştirme</span>
+              <span>Tetkik / Sevk Çekme & Cari Eşleştirme</span>
             </h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              Tetkik takip sistemindeki firmaları Fatura Takip carileri ile eşleştirin. Otomatik tahmin yapılmaz; sadece belirlediğiniz eşleşmeler faturaya yansır.
+              Sevkleri istediğiniz tarih aralığına göre kontrollü çekin; eski aylardan gelen gereksiz kayıtları filtreleyip Fatura Takip carileri ile eşleştirin.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={loadData}
-            disabled={loading}
-            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50"
-            title="Verileri Yenile"
+          <Link
+            to="/prepare"
+            className="px-3.5 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
+            title="Fatura Hazırlık Ekranına Git"
           >
-            <RotateCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Yenile</span>
-          </button>
+            <span>Fatura Hazırlık'a Git</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
 
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || syncing}
             className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-600/20 transition-all active:scale-95 disabled:opacity-50"
           >
             <Save className="w-3.5 h-3.5" />
-            <span>{saving ? 'Kaydediliyor...' : 'Eşleştirmeleri Kaydet'}</span>
+            <span>{saving ? 'Kaydediliyor...' : 'Eşleştirmeleri Kaydet & Aktar'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* TARİH ARALIĞI SEÇİM PANELİ (YARI MANUEL DÖNEM BELİRLEME) */}
+      <div className="bg-gradient-to-r from-slate-900 via-blue-950/30 to-slate-900 border border-blue-500/30 p-4 rounded-2xl shadow-lg space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Sol: Tarih Inputları */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <div className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-700">
+              <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
+              <span className="text-slate-400 font-medium">Başlangıç:</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => setStartDate(e.target.value)}
+                className="bg-transparent text-white font-mono text-xs outline-none cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-700">
+              <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
+              <span className="text-slate-400 font-medium">Bitiş:</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => setEndDate(e.target.value)}
+                className="bg-transparent text-white font-mono text-xs outline-none cursor-pointer"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCurrentPage(1);
+                loadData(startDate, endDate);
+              }}
+              disabled={loading}
+              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold flex items-center gap-1.5 border border-slate-600 transition-colors disabled:opacity-50"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Sevkleri Listele</span>
+            </button>
+          </div>
+
+          {/* Sağ: Aktarma Butonu */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSyncPeriod}
+              disabled={syncing || loading}
+              className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-blue-600/30 transition-all active:scale-95 disabled:opacity-50"
+              title="Eski ayları temizler ve sadece seçili tarih aralığındaki sevkleri faturaya dahil eder"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              <span>{syncing ? 'Sevkler Aktarılıyor...' : 'Bu Dönemdeki Sevkleri Faturaya Aktar'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Hızlı Seçim Butonları */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-800/80 text-[11px]">
+          <span className="text-slate-400 mr-1 flex items-center gap-1">
+            <Clock className="w-3 h-3 text-slate-500" /> Hızlı Aralık:
+          </span>
+          <button
+            type="button"
+            onClick={() => handleQuickPreset('CURRENT_MONTH')}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-300 rounded-lg transition-colors font-medium"
+          >
+            Bu Ay (Cari Ay)
+          </button>
+          <button
+            type="button"
+            onClick={() => handleQuickPreset('LAST_MONTH')}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-300 rounded-lg transition-colors font-medium"
+          >
+            Geçen Ay
+          </button>
+          <button
+            type="button"
+            onClick={() => handleQuickPreset('LAST_30_DAYS')}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-300 rounded-lg transition-colors font-medium"
+          >
+            Son 30 Gün
+          </button>
+          <button
+            type="button"
+            onClick={() => handleQuickPreset('ALL')}
+            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg transition-colors font-medium"
+          >
+            Tüm Zamanlar
           </button>
         </div>
       </div>
@@ -270,8 +487,16 @@ export const TetkikMapping: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
         <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl flex items-center justify-between shadow-sm">
           <div>
-            <span className="text-[11px] text-slate-400 block">Toplam Tetkik Firması</span>
-            <span className="text-lg font-bold font-mono text-slate-100">{stats.total}</span>
+            <span className="text-[11px] text-slate-400 block">Dönem Sevk Sayısı</span>
+            <span className="text-lg font-bold font-mono text-slate-100">{stats.totalReferralsCount} Adet</span>
+          </div>
+          <Stethoscope className="w-5 h-5 text-blue-500/50" />
+        </div>
+
+        <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl flex items-center justify-between shadow-sm">
+          <div>
+            <span className="text-[11px] text-blue-400 block">Dönem Sevk Tutarı</span>
+            <span className="text-sm font-bold font-mono text-blue-300">{formatCurrency(stats.totalUnbilled)}</span>
           </div>
           <Building2 className="w-5 h-5 text-slate-600" />
         </div>
@@ -290,14 +515,6 @@ export const TetkikMapping: React.FC = () => {
             <span className="text-lg font-bold font-mono text-amber-300">{stats.unmatched}</span>
           </div>
           <AlertCircle className="w-5 h-5 text-amber-500/40" />
-        </div>
-
-        <div className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl flex items-center justify-between shadow-sm">
-          <div>
-            <span className="text-[11px] text-blue-400 block">Bekleyen Sevk Tutarı</span>
-            <span className="text-sm font-bold font-mono text-blue-300">{formatCurrency(stats.totalUnbilled)}</span>
-          </div>
-          <Stethoscope className="w-5 h-5 text-blue-500/40" />
         </div>
       </div>
 
@@ -332,14 +549,14 @@ export const TetkikMapping: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              setActiveTab('ALL');
+              setActiveTab('WITH_SEVK');
               setCurrentPage(1);
             }}
             className={`px-3 py-1 rounded-md font-medium transition-colors ${
-              activeTab === 'ALL' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+              activeTab === 'WITH_SEVK' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Tümü ({tetkikCompanies.length})
+            Dönemde Sevki Olanlar
           </button>
           <button
             type="button"
@@ -368,25 +585,25 @@ export const TetkikMapping: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              setActiveTab('WITH_SEVK');
+              setActiveTab('ALL');
               setCurrentPage(1);
             }}
             className={`px-3 py-1 rounded-md font-medium transition-colors ${
-              activeTab === 'WITH_SEVK' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+              activeTab === 'ALL' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Sevk Kaydı Olanlar
+            Tüm Firmalar ({tetkikCompanies.length})
           </button>
         </div>
       </div>
 
-      {/* EŞLEŞTİRME TABLOSU (FirmRegistration.tsx İle Birebir Format) */}
+      {/* EŞLEŞTİRME TABLOSU */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 uppercase text-[10px] tracking-wider font-semibold">
-                <th className="p-3 w-1/2">Tetkik Sistemindeki Firma (Gelen Veri)</th>
+                <th className="p-3 w-1/2">Tetkik Sistemindeki Firma (Sevk Dönemi Verisi)</th>
                 <th className="p-3 w-1/2">Fatura Takip Eşleşmesi (Hedef Cari)</th>
               </tr>
             </thead>
@@ -417,14 +634,14 @@ export const TetkikMapping: React.FC = () => {
                         {row.unbilledReferrals > 0 ? (
                           <span className="inline-flex items-center gap-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-mono font-bold">
                             <Stethoscope className="w-3 h-3" />
-                            <span>{row.unbilledReferrals} Sevk ({formatCurrency(row.unbilledAmount)})</span>
+                            <span>Bu Dönemde {row.unbilledReferrals} Sevk ({formatCurrency(row.unbilledAmount)})</span>
                           </span>
                         ) : row.totalReferrals > 0 ? (
                           <span className="inline-flex items-center gap-1 bg-slate-800 text-slate-400 border border-slate-700 px-2 py-0.5 rounded text-[10px] font-mono">
-                            <span>Geçmiş {row.totalReferrals} Sevk</span>
+                            <span>{row.totalReferrals} Sevk</span>
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-500 italic">Sevk kaydı yok</span>
+                          <span className="text-[10px] text-slate-500 italic">Bu aralıkta sevk yok</span>
                         )}
 
                         {row.hazardClass && row.hazardClass !== '-' && (
@@ -461,7 +678,7 @@ export const TetkikMapping: React.FC = () => {
                             ⚠️ Eşleşme Bekliyor (Lütfen Seçin...)
                           </option>
                           <option value="IGNORE" className="bg-slate-900 text-slate-400">
-                            ❌ Bu Firmayı Atla (Faturalandırma Yapma)
+                            ❌ Bu Firmayı Atla (Faturaya Ekleme)
                           </option>
                           <option value="NEW" className="bg-slate-900 text-emerald-300 font-bold">
                             ✨ BU İSİMLE YENİ FİRMA OLARAK EKLE
@@ -489,7 +706,7 @@ export const TetkikMapping: React.FC = () => {
                             </span>
                           ) : currentVal === 'IGNORE' ? (
                             <span className="text-slate-500 italic">
-                              Bu firmaya ait tetkik sevkleri faturalandırma hazırlığına eklenmeyecek
+                              Bu firmaya ait sevkler faturaya dahil edilmeyecek (Atlandı)
                             </span>
                           ) : (
                             <span className="text-amber-400 font-medium flex items-center gap-1">
@@ -507,7 +724,7 @@ export const TetkikMapping: React.FC = () => {
               {paginatedCompanies.length === 0 && (
                 <tr>
                   <td colSpan={2} className="p-8 text-center text-slate-500">
-                    Arama kriterine uygun Tetkik firması bulunamadı.
+                    Seçilen kriterlere ve tarih aralığına uygun Tetkik firması bulunamadı.
                   </td>
                 </tr>
               )}
@@ -519,7 +736,7 @@ export const TetkikMapping: React.FC = () => {
         {filteredCompanies.length > itemsPerPage && (
           <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
             <span>
-              Toplam {filteredCompanies.length} kayıt • Sayfa {currentPage} / {totalPages}
+              Toplam {filteredCompanies.length} firma • Sayfa {currentPage} / {totalPages}
             </span>
             <div className="flex items-center gap-1.5">
               <button
