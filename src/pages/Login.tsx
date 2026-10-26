@@ -91,16 +91,6 @@ const Login = ({ onLogin }: { onLogin: (token: string) => void }) => {
                             </>
                         )}
                     </button>
-                    
-                    <div className="pt-4 mt-4 border-t border-slate-800">
-                        <button 
-                            type="button"
-                            onClick={() => window.location.href = window.location.protocol + '//' + window.location.hostname + ':4000'}
-                            className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold py-3 rounded-xl flex items-center justify-center gap-2 transition-all"
-                        >
-                            🩺 Tetkik & Sevk Sistemine Git
-                        </button>
-                    </div>
                 </form>
             </div>
         </div>
