@@ -12,6 +12,7 @@ node_modules/
 /db/*.sqlite*
 /db/*.json
 /db/backups/
+/db/whatsapp_auth/
 !/db/users.example.json
 
 # Environment Variables & Secrets

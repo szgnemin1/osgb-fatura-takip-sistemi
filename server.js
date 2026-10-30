@@ -2328,6 +2328,16 @@ function escapeTelegramHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 async function isTelegramUserAllowed(telegramId) {
     if (!telegramId || !db) return false;
     const row = await db.get("SELECT id FROM telegram_allowed_users WHERE telegram_id = ?", [String(telegramId)]);
@@ -3712,7 +3722,7 @@ app.get('/mutabakat/:token', async (req, res) => {
             <body class="bg-slate-950 text-slate-200 min-h-screen flex items-center justify-center p-3 sm:p-6">
                 <div class="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
                     
-                    {/* Üst Logo ve Başlık */}
+                    <!-- Üst Logo ve Başlık -->
                     <div class="text-center space-y-2 pb-4 border-b border-slate-800">
                         <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold">
                             🛡️ OSGB ProFinans Cari Yönetimi
@@ -3721,7 +3731,7 @@ app.get('/mutabakat/:token', async (req, res) => {
                         <p class="text-xs text-slate-400">Resmi Muhasebe & Finans Mutabakat Bildirimi</p>
                     </div>
 
-                    {/* Müşteri ve Dönem Bilgisi */}
+                    <!-- Müşteri ve Dönem Bilgisi -->
                     <div class="bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 space-y-2 text-xs">
                         <div class="flex justify-between items-center">
                             <span class="text-slate-400">Firma Unvanı:</span>
@@ -3737,21 +3747,21 @@ app.get('/mutabakat/:token', async (req, res) => {
                         </div>
                     </div>
 
-                    {/* Finansal Bakiye Göstergesi */}
+                    <!-- Finansal Bakiye Göstergesi -->
                     <div class="border rounded-2xl p-5 text-center space-y-1 ${bakiyeKutuClass}">
                         <div class="text-xs font-semibold tracking-wider uppercase opacity-80">Kayıtlarımızdaki Bakiye</div>
                         <div class="text-3xl sm:text-4xl font-extrabold font-mono tracking-tight">${balanceFormatted} TL</div>
                         <div class="text-xs font-bold pt-1">${bakiyeBadge}</div>
                     </div>
 
-                    {/* PDF İncele Butonu */}
+                    <!-- PDF İncele Butonu -->
                     <div class="text-center">
                         <a href="/mutabakat/${token}/pdf" target="_blank" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors shadow-sm">
                             📄 Cari Hesap Ekstresini ve Resmi Mektubu İncele (PDF)
                         </a>
                     </div>
 
-                    {/* Onay Durum Alanı */}
+                    <!-- Onay Durum Alanı -->
                     <div id="actionContainer">
                         ${hasResponded ? `
                             <div class="p-5 rounded-2xl ${isApproved ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2">
@@ -3777,7 +3787,7 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     </button>
                                 </div>
 
-                                {/* Fark Bildirim Formu (Gizli) */}
+                                <!-- Fark Bildirim Formu (Gizli) -->
                                 <div id="disputeForm" class="hidden bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 mt-4 animate-in fade-in">
                                     <div class="text-xs font-bold text-rose-400">Fark / İtiraz Detayları</div>
                                     <div>
