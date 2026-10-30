@@ -32,8 +32,8 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
 
   // Overlay ve Sidebar Container sınıfları
   const sidebarContainerClass = `
-    fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 border-r border-slate-800 h-full flex flex-col transition-transform duration-300 ease-in-out
-    md:translate-x-0 md:static md:h-screen
+    fixed inset-y-0 left-0 z-50 w-64 shrink-0 bg-slate-900 border-r border-slate-800 h-full flex flex-col transition-transform duration-300 ease-in-out
+    md:translate-x-0 md:static md:h-screen md:shrink-0
     ${isOpen ? 'translate-x-0' : '-translate-x-full'}
   `;
 

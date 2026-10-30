@@ -174,7 +174,7 @@ const App = () => {
         <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col h-full relative w-full transition-all duration-300">
+        <main className="flex-1 flex flex-col h-full relative w-full transition-all duration-300 min-w-0">
           
           {/* Mobil Header */}
           <div className="md:hidden bg-slate-900 border-b border-slate-800 p-4 flex items-center justify-between sticky top-0 z-30">
