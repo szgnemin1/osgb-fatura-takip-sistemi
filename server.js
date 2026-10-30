@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const server = http.createServer(app);
@@ -31,13 +32,90 @@ const corsOptions = {
 
 const io = new Server(server, { cors: corsOptions });
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'osgb_pro_super_secret_key_2024';
+
+// --- GÜÇLÜ VE DİNAMİK KRİPTOGRAFİK ANAHTAR YÖNETİMİ ---
+let JWT_SECRET = process.env.JWT_SECRET;
+let ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+
+if (!JWT_SECRET || JWT_SECRET === 'osgb_pro_super_secret_key_2024') {
+    JWT_SECRET = crypto.randomBytes(48).toString('hex');
+    process.env.JWT_SECRET = JWT_SECRET;
+    try {
+        const envPath = path.join(__dirname, '.env');
+        const envContent = `# OSGB ProFinans & Cari Takip Sistemi Güvenlik Yapılandırması\nPORT=${PORT}\nJWT_SECRET=${JWT_SECRET}\nENCRYPTION_KEY=${crypto.randomBytes(32).toString('hex')}\nNODE_ENV=production\n`;
+        fs.writeFileSync(envPath, envContent, 'utf-8');
+        console.log('[Güvenlik] Güçlü dinamik JWT_SECRET oluşturuldu ve .env dosyasına kaydedildi.');
+    } catch (_) {}
+}
+
+if (!ENCRYPTION_KEY) {
+    ENCRYPTION_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest('hex');
+    process.env.ENCRYPTION_KEY = ENCRYPTION_KEY;
+}
+const KEY_BUFFER = Buffer.from(ENCRYPTION_KEY.padEnd(64, '0').slice(0, 64), 'hex');
+
+// AES-256-GCM ile Gizli Anahtarları (2FA Secret vb.) Diskte Şifreleme (Encryption-at-Rest)
+function encryptSecret(plainText) {
+    if (!plainText) return plainText;
+    if (typeof plainText === 'string' && plainText.startsWith('enc_gcm:')) return plainText;
+    try {
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', KEY_BUFFER, iv);
+        let encrypted = cipher.update(String(plainText), 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const tag = cipher.getAuthTag().toString('hex');
+        return `enc_gcm:${iv.toString('hex')}:${tag}:${encrypted}`;
+    } catch (e) {
+        console.error('[Kripto] Şifreleme hatası:', e);
+        return plainText;
+    }
+}
+
+function decryptSecret(cipherText) {
+    if (!cipherText || typeof cipherText !== 'string') return cipherText;
+    if (!cipherText.startsWith('enc_gcm:')) return cipherText;
+    try {
+        const parts = cipherText.split(':');
+        if (parts.length !== 4) return cipherText;
+        const iv = Buffer.from(parts[1], 'hex');
+        const tag = Buffer.from(parts[2], 'hex');
+        const encrypted = parts[3];
+        const decipher = crypto.createDecipheriv('aes-256-gcm', KEY_BUFFER, iv);
+        decipher.setAuthTag(tag);
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        console.error('[Kripto] Çözme hatası:', e);
+        return null;
+    }
+}
 
 // Güvenlik Başlıkları
 app.use(helmet({
-    contentSecurityPolicy: false, // React uygulaması için CSP'yi şimdilik devredışı bırakıyoruz (build klasöründen çalışacağı için)
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false
 }));
+
+// Genel API Hız Sınırlaması (DDoS & Flood Koruması)
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 240,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Çok fazla istek yapıldı. Sistem güvenliği için lütfen 1 dakika bekleyip tekrar deneyiniz.' }
+});
+app.use('/api/', apiLimiter);
+
+// Kimlik Doğrulama Hız Sınırlaması (Sözlük & Otomasyon Saldırısı Önleme)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Çok fazla giriş denemesi yapıldı. Güvenliğiniz için lütfen 15 dakika sonra tekrar deneyiniz.' }
+});
+app.use('/api/login', authLimiter);
 
 app.use(cors(corsOptions));
 app.use(bodyParser.json({ limit: '50mb' }));
@@ -251,7 +329,45 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
     }
 }
 
-// SQLite Başlat (Eşzamanlı Çoklu Kullanıcı ve WAL Modu)
+// Güvenli Veritabanı Yedekleme Dizini
+const backupDir = path.join(dbDir, 'backups');
+if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+async function createDatabaseBackup() {
+    try {
+        if (!db) return;
+        const now = new Date();
+        const ts = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const backupSqlitePath = path.join(backupDir, `database_${ts}.sqlite`);
+        await db.run('VACUUM INTO ?', backupSqlitePath);
+
+        // users.json dosyasını da yedekle
+        if (fs.existsSync(usersPath)) {
+            const backupUsersPath = path.join(backupDir, `users_${ts}.json`);
+            fs.copyFileSync(usersPath, backupUsersPath);
+        }
+
+        // 10'dan fazla eski yedek varsa en eskileri temizle
+        const files = fs.readdirSync(backupDir).filter(f => f.startsWith('database_') && f.endsWith('.sqlite'));
+        if (files.length > 10) {
+            files.sort();
+            const toDelete = files.slice(0, files.length - 10);
+            for (const f of toDelete) {
+                try {
+                    fs.unlinkSync(path.join(backupDir, f));
+                    const matchingUser = f.replace('database_', 'users_').replace('.sqlite', '.json');
+                    const userPath = path.join(backupDir, matchingUser);
+                    if (fs.existsSync(userPath)) fs.unlinkSync(userPath);
+                } catch (_) {}
+            }
+        }
+        console.log(`[Yedekleme] Güvenli veritabanı yedeği alındı: database_${ts}.sqlite`);
+    } catch (e) {
+        console.error('[Yedekleme] Otomatik yedekleme hatası:', e);
+    }
+}
+
+// SQLite Başlat (Eşzamanlı Çoklu Kullanıcı, WAL Modu & Güvenlik Tabloları)
 (async () => {
     db = await open({ filename: sqlitePath, driver: sqlite3.Database });
     await db.run('PRAGMA journal_mode = WAL;');
@@ -260,7 +376,38 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
     await db.run('PRAGMA cache_size = -64000;');
     await db.run('CREATE TABLE IF NOT EXISTS invoice_batches (id TEXT PRIMARY KEY, data TEXT);');
     await db.run('CREATE TABLE IF NOT EXISTS tetkik_firm_mappings (id TEXT PRIMARY KEY, tetkik_name TEXT UNIQUE, target_firm_id TEXT, updated_at TEXT);');
-    console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu Aktif).");
+    await db.run(`CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT,
+        ip TEXT,
+        username TEXT,
+        action TEXT,
+        details TEXT,
+        status TEXT
+    );`);
+    await db.run('CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);');
+    console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu & Güvenlik Denetim Tablosu Aktif).");
+
+    // users.json içindeki 2FA gizli anahtarlarını AES-256-GCM ile şifrele (Migration)
+    try {
+        const currentUsers = readUsers();
+        let migrated = false;
+        for (const u of currentUsers) {
+            if (u.twoFactorSecret && !u.twoFactorSecret.startsWith('enc_gcm:')) {
+                u.twoFactorSecret = encryptSecret(u.twoFactorSecret);
+                migrated = true;
+            }
+        }
+        if (migrated) {
+            writeUsers(currentUsers);
+            console.log('[Güvenlik] users.json içindeki 2FA gizli anahtarları AES-256-GCM ile şifrelendi.');
+        }
+    } catch (_) {}
+
+    // Otomatik ilk yedekleme ve 12 saatlik yedekleme döngüsü
+    await createDatabaseBackup();
+    setInterval(createDatabaseBackup, 12 * 60 * 60 * 1000);
+
     // Sunucu başlangıcında cari ayın sevklerini senkronize et (eski aylardan çöp veri çekmez)
     const now = new Date();
     const y = now.getFullYear();
@@ -282,6 +429,33 @@ const authenticateToken = (req, res, next) => {
         next();
     });
 };
+
+// Rol Tabanlı Erişim Denetimi: Yalnızca Yönetici (Admin) Yetkisi Kontrolü
+const requireAdmin = (req, res, next) => {
+    if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Yetkisiz işlem. Bu alan için Yönetici (Admin) yetkisi gerekmektedir.' });
+    }
+    next();
+};
+
+// Güvenlik & İşlem Denetim Kaydı (Audit Logging)
+async function logAuditEvent(req, action, details, status = 'SUCCESS', usernameOverride = null) {
+    try {
+        if (!db) return;
+        const id = 'aud_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        const ipAddr = req ? (req.ip || req.connection?.remoteAddress || req.headers['x-forwarded-for'] || '127.0.0.1') : 'SYSTEM';
+        const username = usernameOverride || req?.user?.username || 'ANONYMOUS';
+        const timestamp = new Date().toISOString();
+        const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details || '');
+
+        await db.run(
+            'INSERT INTO audit_logs (id, timestamp, ip, username, action, details, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [id, timestamp, String(ipAddr), String(username), String(action), detailsStr, String(status)]
+        );
+    } catch (e) {
+        console.error('[Audit Log] Kayıt hatası:', e);
+    }
+}
 
 // Yardımcı: Kullanıcı DB Güvenli Okuma & Yazma
 function readUsers() {
@@ -426,7 +600,7 @@ function clearFailedLogin(key) {
 }
 
 // --- LOGIN ENDPOINT ---
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
     const cleanUser = (username || '').trim();
     const key = getAttemptKey(req, cleanUser);
@@ -434,6 +608,7 @@ app.post('/api/login', (req, res) => {
     // 1. Kilit Kontrolü
     const lockout = checkLoginLockout(key);
     if (lockout.isLocked) {
+        await logAuditEvent(req, 'ACCOUNT_LOCKOUT', { username: cleanUser, remainingMinutes: lockout.remainingMinutes }, 'LOCKED', cleanUser);
         return res.status(429).json({
             error: `Çok fazla hatalı giriş denemesi yapıldı. Hesabınız ${lockout.remainingMinutes} dakika kilitlendi. Lütfen bekleyiniz.`
         });
@@ -446,10 +621,12 @@ app.post('/api/login', (req, res) => {
     if (!user || !bcrypt.compareSync(password || '', user.password)) {
         const failStatus = recordFailedLogin(key);
         if (failStatus.isLocked) {
+            await logAuditEvent(req, 'ACCOUNT_LOCKOUT', { username: cleanUser, remainingMinutes: failStatus.remainingMinutes }, 'LOCKED', cleanUser);
             return res.status(429).json({
                 error: `5 kez hatalı giriş yapıldı. Güvenliğiniz için hesabınız ${failStatus.remainingMinutes} dakika süreyle kilitlendi.`
             });
         }
+        await logAuditEvent(req, 'LOGIN_FAILED', { username: cleanUser, remainingAttempts: failStatus.remainingAttempts }, 'FAILURE', cleanUser);
         return res.status(400).json({
             error: `Hatalı kullanıcı adı veya şifre. Kalan deneme hakkı: ${failStatus.remainingAttempts}`
         });
@@ -462,6 +639,7 @@ app.post('/api/login', (req, res) => {
             JWT_SECRET,
             { expiresIn: '5m' }
         );
+        await logAuditEvent(req, 'LOGIN_2FA_PROMPT', { username: user.username }, 'PENDING', user.username);
         return res.json({
             require2FA: true,
             tempToken,
@@ -473,11 +651,12 @@ app.post('/api/login', (req, res) => {
     // 2FA yoksa giriş başarılı
     clearFailedLogin(key);
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+    await logAuditEvent(req, 'LOGIN_SUCCESS', { username: user.username, role: user.role || 'user' }, 'SUCCESS', user.username);
     res.json({ token, username: user.username, role: user.role || 'user' });
 });
 
 // --- 2FA İLE GİRİŞİ TAMAMLAMA ENDPOINT'İ ---
-app.post('/api/login/2fa', (req, res) => {
+app.post('/api/login/2fa', async (req, res) => {
     const { tempToken, code } = req.body;
     if (!tempToken || !code) {
         return res.status(400).json({ error: 'Doğrulama kodu ve oturum anahtarı gereklidir.' });
@@ -496,6 +675,7 @@ app.post('/api/login/2fa', (req, res) => {
     const key = getAttemptKey(req, payload.username);
     const lockout = checkLoginLockout(key);
     if (lockout.isLocked) {
+        await logAuditEvent(req, 'ACCOUNT_LOCKOUT', { username: payload.username, remainingMinutes: lockout.remainingMinutes }, 'LOCKED', payload.username);
         return res.status(429).json({
             error: `Çok fazla hatalı kod denemesi yapıldı. Hesabınız ${lockout.remainingMinutes} dakika kilitlendi.`
         });
@@ -507,14 +687,18 @@ app.post('/api/login/2fa', (req, res) => {
         return res.status(404).json({ error: 'Kullanıcı veya 2FA yapılandırması bulunamadı.' });
     }
 
-    const isValid = verifyTOTP(code, user.twoFactorSecret, 1);
+    // Şifreli secret'ı çöz ve doğrula
+    const rawSecret = decryptSecret(user.twoFactorSecret);
+    const isValid = verifyTOTP(code, rawSecret, 1);
     if (!isValid) {
         const failStatus = recordFailedLogin(key);
         if (failStatus.isLocked) {
+            await logAuditEvent(req, 'ACCOUNT_LOCKOUT', { username: payload.username, remainingMinutes: failStatus.remainingMinutes }, 'LOCKED', payload.username);
             return res.status(429).json({
                 error: `5 kez hatalı kod girildi. Hesabınız ${failStatus.remainingMinutes} dakika kilitlendi.`
             });
         }
+        await logAuditEvent(req, '2FA_FAILED', { username: payload.username, remainingAttempts: failStatus.remainingAttempts }, 'FAILURE', payload.username);
         return res.status(400).json({
             error: `Hatalı doğrulama kodu. Google Authenticator'daki güncel kodu giriniz. Kalan deneme hakkı: ${failStatus.remainingAttempts}`
         });
@@ -523,6 +707,7 @@ app.post('/api/login/2fa', (req, res) => {
     // 2FA Kodu Doğru!
     clearFailedLogin(key);
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+    await logAuditEvent(req, 'LOGIN_2FA_SUCCESS', { username: user.username, role: user.role || 'user' }, 'SUCCESS', user.username);
     res.json({ token, username: user.username, role: user.role || 'user' });
 });
 
@@ -541,7 +726,7 @@ app.get('/api/me', authenticateToken, (req, res) => {
 });
 
 // --- KULLANICI KENDİ BİLGİLERİNİ GÜNCELLEME (Kullanıcı Adı / Şifre Değiştirme) ---
-app.post('/api/users/change-credentials', authenticateToken, (req, res) => {
+app.post('/api/users/change-credentials', authenticateToken, async (req, res) => {
     try {
         const { currentPassword, newUsername, newPassword } = req.body;
         if (!currentPassword) {
@@ -556,6 +741,7 @@ app.post('/api/users/change-credentials', authenticateToken, (req, res) => {
 
         const user = users[userIndex];
         if (!bcrypt.compareSync(currentPassword, user.password)) {
+            await logAuditEvent(req, 'CREDENTIAL_CHANGE_FAILED', { error: 'Hatalı mevcut şifre' }, 'FAILURE');
             return res.status(400).json({ error: 'Mevcut şifreniz hatalı.' });
         }
 
@@ -592,6 +778,7 @@ app.post('/api/users/change-credentials', authenticateToken, (req, res) => {
         writeUsers(users);
 
         const newToken = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+        await logAuditEvent(req, 'CREDENTIALS_CHANGED', { username: user.username, usernameChanged, passwordChanged }, 'SUCCESS');
 
         res.json({
             success: true,
@@ -628,7 +815,7 @@ app.post('/api/2fa/setup', authenticateToken, (req, res) => {
     }
 });
 
-app.post('/api/2fa/verify-and-enable', authenticateToken, (req, res) => {
+app.post('/api/2fa/verify-and-enable', authenticateToken, async (req, res) => {
     try {
         const { secret, code } = req.body;
         if (!secret || !code) {
@@ -645,9 +832,11 @@ app.post('/api/2fa/verify-and-enable', authenticateToken, (req, res) => {
         if (userIndex === -1) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
 
         users[userIndex].twoFactorEnabled = true;
-        users[userIndex].twoFactorSecret = secret;
+        users[userIndex].twoFactorSecret = encryptSecret(secret); // AES-256-GCM ile diskte şifrele
         users[userIndex].twoFactorActivatedAt = new Date().toISOString();
         writeUsers(users);
+
+        await logAuditEvent(req, '2FA_ENABLED', { username: req.user.username }, 'SUCCESS');
 
         res.json({
             success: true,
@@ -659,7 +848,7 @@ app.post('/api/2fa/verify-and-enable', authenticateToken, (req, res) => {
     }
 });
 
-app.post('/api/2fa/disable', authenticateToken, (req, res) => {
+app.post('/api/2fa/disable', authenticateToken, async (req, res) => {
     try {
         const { currentPassword } = req.body;
         if (!currentPassword) {
@@ -672,6 +861,7 @@ app.post('/api/2fa/disable', authenticateToken, (req, res) => {
 
         const user = users[userIndex];
         if (!bcrypt.compareSync(currentPassword, user.password)) {
+            await logAuditEvent(req, '2FA_DISABLE_FAILED', { error: 'Hatalı şifre' }, 'FAILURE');
             return res.status(400).json({ error: 'Mevcut şifreniz hatalı.' });
         }
 
@@ -680,6 +870,8 @@ app.post('/api/2fa/disable', authenticateToken, (req, res) => {
         user.twoFactorDisabledAt = new Date().toISOString();
         users[userIndex] = user;
         writeUsers(users);
+
+        await logAuditEvent(req, '2FA_DISABLED', { username: req.user.username }, 'SUCCESS');
 
         res.json({
             success: true,
@@ -691,8 +883,8 @@ app.post('/api/2fa/disable', authenticateToken, (req, res) => {
     }
 });
 
-// --- KULLANICI LİSTESİ ---
-app.get('/api/users', authenticateToken, (req, res) => {
+// --- KULLANICI LİSTESİ (Admin) ---
+app.get('/api/users', authenticateToken, requireAdmin, (req, res) => {
     try {
         const users = readUsers();
         res.json(users.map(u => ({
@@ -709,12 +901,8 @@ app.get('/api/users', authenticateToken, (req, res) => {
 });
 
 // --- YENİ KULLANICI EKLEME (Admin) ---
-app.post('/api/users', authenticateToken, (req, res) => {
+app.post('/api/users', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Yeni kullanıcı ekleme yetkisi sadece yöneticilere aittir.' });
-        }
-
         const { username, password, role = 'user', twoFactorEnabled = false } = req.body;
         if (!username || !username.trim()) {
             return res.status(400).json({ error: 'Kullanıcı adı gereklidir.' });
@@ -733,7 +921,7 @@ app.post('/api/users', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Bu kullanıcı adı zaten mevcut.' });
         }
 
-        const secret = twoFactorEnabled ? generateTOTPSecret(20) : null;
+        const secret = twoFactorEnabled ? encryptSecret(generateTOTPSecret(20)) : null;
 
         const newUser = {
             id: Date.now(),
@@ -747,6 +935,8 @@ app.post('/api/users', authenticateToken, (req, res) => {
 
         users.push(newUser);
         writeUsers(users);
+
+        await logAuditEvent(req, 'USER_CREATED', { username: trimmed, role: newUser.role, twoFactorEnabled: newUser.twoFactorEnabled }, 'SUCCESS');
 
         res.json({
             success: true,
@@ -766,12 +956,8 @@ app.post('/api/users', authenticateToken, (req, res) => {
 });
 
 // --- KULLANICI DÜZENLEME / ŞİFRE SIFIRLAMA (Admin) ---
-app.put('/api/users/:id', authenticateToken, (req, res) => {
+app.put('/api/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Kullanıcı düzenleme yetkisi sadece yöneticilere aittir.' });
-        }
-
         const targetId = req.params.id;
         const { username, password, role, twoFactorEnabled } = req.body;
         const users = readUsers();
@@ -810,7 +996,7 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
                 user.twoFactorEnabled = false;
                 user.twoFactorSecret = null;
             } else if (!user.twoFactorSecret) {
-                user.twoFactorSecret = generateTOTPSecret(20);
+                user.twoFactorSecret = encryptSecret(generateTOTPSecret(20));
                 user.twoFactorEnabled = true;
             } else {
                 user.twoFactorEnabled = true;
@@ -820,6 +1006,8 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
         user.updatedAt = new Date().toISOString();
         users[userIndex] = user;
         writeUsers(users);
+
+        await logAuditEvent(req, 'USER_UPDATED', { targetId, username: user.username, role: user.role, twoFactorEnabled: user.twoFactorEnabled }, 'SUCCESS');
 
         res.json({
             success: true,
@@ -839,12 +1027,8 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
 });
 
 // --- KULLANICI 2FA SIFIRLAMA (Admin) ---
-app.post('/api/users/:id/reset-2fa', authenticateToken, (req, res) => {
+app.post('/api/users/:id/reset-2fa', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Bu işlem sadece yöneticilere aittir.' });
-        }
-
         const targetId = req.params.id;
         const users = readUsers();
         const userIndex = users.findIndex(u => String(u.id) === String(targetId));
@@ -857,6 +1041,8 @@ app.post('/api/users/:id/reset-2fa', authenticateToken, (req, res) => {
         users[userIndex].twoFactorResetAt = new Date().toISOString();
         writeUsers(users);
 
+        await logAuditEvent(req, '2FA_RESET_ADMIN', { targetId, targetUsername: users[userIndex].username }, 'SUCCESS');
+
         res.json({
             success: true,
             message: `"${users[userIndex].username}" kullanıcısının 2FA doğrulaması başarıyla sıfırlandı.`
@@ -867,12 +1053,8 @@ app.post('/api/users/:id/reset-2fa', authenticateToken, (req, res) => {
 });
 
 // --- KULLANICI SİLME (Admin) ---
-app.delete('/api/users/:id', authenticateToken, (req, res) => {
+app.delete('/api/users/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Kullanıcı silme yetkisi sadece yöneticilere aittir.' });
-        }
-
         const targetId = req.params.id;
         const users = readUsers();
         const user = users.find(u => String(u.id) === String(targetId));
@@ -893,6 +1075,8 @@ app.delete('/api/users/:id', authenticateToken, (req, res) => {
 
         const remainingUsers = users.filter(u => String(u.id) !== String(targetId));
         writeUsers(remainingUsers);
+
+        await logAuditEvent(req, 'USER_DELETED', { targetId, deletedUsername: user.username }, 'SUCCESS');
 
         res.json({ success: true, message: 'Kullanıcı başarıyla silindi.' });
     } catch (e) {
@@ -1032,8 +1216,8 @@ app.post('/api/transactions/bulk', authenticateToken, async (req, res) => {
     }
 });
 
-// 3.2 API: Fatura Silme (Tekil veya Toplu)
-app.post('/api/transactions/delete', authenticateToken, async (req, res) => {
+// 3.2 API: Fatura Silme (Tekil veya Toplu - Admin Only)
+app.post('/api/transactions/delete', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { id, ids } = req.body;
         const targetIds = ids && Array.isArray(ids) ? ids : (id ? [id] : []);
@@ -1047,6 +1231,8 @@ app.post('/api/transactions/delete', authenticateToken, async (req, res) => {
         await delStmt.finalize();
         await db.run('COMMIT');
 
+        await logAuditEvent(req, 'TRANSACTIONS_DELETED', { count: targetIds.length, ids: targetIds }, 'SUCCESS');
+
         io.emit('db_updated');
         res.json({ success: true, deletedCount: targetIds.length });
     } catch (e) {
@@ -1056,8 +1242,8 @@ app.post('/api/transactions/delete', authenticateToken, async (req, res) => {
     }
 });
 
-// 3.3 API: Firma Silme (Tekil veya Toplu)
-app.post('/api/firms/delete', authenticateToken, async (req, res) => {
+// 3.3 API: Firma Silme (Tekil veya Toplu - Admin Only)
+app.post('/api/firms/delete', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { id, ids } = req.body;
         const targetIds = ids && Array.isArray(ids) ? ids : (id ? [id] : []);
@@ -1070,6 +1256,8 @@ app.post('/api/firms/delete', authenticateToken, async (req, res) => {
         }
         await delStmt.finalize();
         await db.run('COMMIT');
+
+        await logAuditEvent(req, 'FIRMS_DELETED', { count: targetIds.length, ids: targetIds }, 'SUCCESS');
 
         io.emit('db_updated');
         res.json({ success: true, deletedCount: targetIds.length });
@@ -1897,6 +2085,49 @@ app.post('/api/tetkik/create-firm', authenticateToken, async (req, res) => {
         try { await db.run('ROLLBACK'); } catch (_) {}
         console.error('Create firm from tetkik error:', e);
         res.status(500).json({ error: 'Firma oluşturulamadı' });
+    }
+});
+
+// --- GÜVENLİK DENETİM GÜNLÜĞÜ (Audit Logs - Admin Only) ---
+app.get('/api/audit-logs', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const limit = Math.min(Number(req.query.limit) || 100, 500);
+        const logs = await db.all('SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT ?', limit);
+        res.json({ success: true, logs });
+    } catch (e) {
+        console.error('Audit log çekme hatası:', e);
+        res.status(500).json({ error: 'Denetim kayıtları alınamadı.' });
+    }
+});
+
+// --- SİSTEM GÜVENLİK DURUMU RAPORU (Admin Only) ---
+app.get('/api/security-status', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const users = readUsers();
+        const totalUsers = users.length;
+        const usersWith2FA = users.filter(u => u.twoFactorEnabled).length;
+        const now = Date.now();
+        const lockedAccounts = Array.from(loginAttempts.values()).filter(r => r.lockedUntil && r.lockedUntil > now).length;
+        const auditCount = (await db.get('SELECT COUNT(*) as cnt FROM audit_logs'))?.cnt || 0;
+        const backupFiles = fs.existsSync(backupDir) ? fs.readdirSync(backupDir).filter(f => f.endsWith('.sqlite')) : [];
+
+        res.json({
+            success: true,
+            status: {
+                jwtConfigured: !!process.env.JWT_SECRET && process.env.JWT_SECRET !== 'osgb_pro_super_secret_key_2024',
+                encryptionConfigured: !!KEY_BUFFER,
+                totalUsers,
+                usersWith2FA,
+                twoFactorRatio: totalUsers > 0 ? Math.round((usersWith2FA / totalUsers) * 100) : 0,
+                activeLockouts: lockedAccounts,
+                totalAuditEvents: auditCount,
+                backupCount: backupFiles.length,
+                latestBackup: backupFiles.length > 0 ? backupFiles.sort().reverse()[0] : null
+            }
+        });
+    } catch (e) {
+        console.error('Güvenlik durumu hatası:', e);
+        res.status(500).json({ error: 'Güvenlik durumu alınamadı.' });
     }
 });
 
