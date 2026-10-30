@@ -11,7 +11,7 @@ import {
   XAxis, YAxis, CartesianGrid, Legend, AreaChart, Area 
 } from 'recharts';
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6'];
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6', '#06b6d4', '#f97316'];
 
 const Expenses = () => {
   // State
@@ -344,35 +344,112 @@ const Expenses = () => {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
-                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg flex flex-col h-[300px]">
-                      <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-emerald-500"/> Gelir & Gider</h3>
-                      <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart data={getBarData()} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-                              <defs>
-                                  <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient>
-                                  <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                              <XAxis dataKey="name" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} />
-                              <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `${val/1000}k`} />
-                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff', fontSize: '12px' }} formatter={(val:number) => formatCurrency(val)} />
-                              <Legend verticalAlign="top" iconSize={10} wrapperStyle={{fontSize: '10px'}}/>
-                              <Area type="monotone" dataKey="Gelir" stroke="#10b981" fill="url(#colorIncome)" />
-                              <Area type="monotone" dataKey="Gider" stroke="#ef4444" fill="url(#colorExpense)" />
-                          </AreaChart>
-                      </ResponsiveContainer>
+                  {/* Gelir & Gider Grafiği */}
+                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg flex flex-col h-[360px]">
+                      <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4 text-emerald-500"/> Gelir & Gider Trendi ({selectedYear})
+                      </h3>
+                      <div className="flex-1 w-full min-h-0">
+                          <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={getBarData()} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                  <defs>
+                                      <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient>
+                                      <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient>
+                                  </defs>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                                  <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(val) => `${val/1000}k`} />
+                                  <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#fff', fontSize: '12px' }} formatter={(val:number) => formatCurrency(val)} />
+                                  <Legend verticalAlign="top" iconSize={10} wrapperStyle={{fontSize: '11px', paddingBottom: '10px'}}/>
+                                  <Area type="monotone" dataKey="Gelir" stroke="#10b981" strokeWidth={2} fill="url(#colorIncome)" />
+                                  <Area type="monotone" dataKey="Gider" stroke="#ef4444" strokeWidth={2} fill="url(#colorExpense)" />
+                              </AreaChart>
+                          </ResponsiveContainer>
+                      </div>
                   </div>
-                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg flex flex-col h-[300px]">
-                      <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2"><PieIcon className="w-4 h-4 text-purple-500"/> Dağılım</h3>
-                      <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                              <Pie data={getPieData()} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                                  {getPieData().map((entry, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="rgba(0,0,0,0)" />))}
-                              </Pie>
-                              <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff', fontSize: '12px' }} formatter={(val:number) => formatCurrency(val)} />
-                              <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{fontSize: '10px'}} />
-                          </PieChart>
-                      </ResponsiveContainer>
+
+                  {/* Kategori Bazlı Gider Dağılımı (Gelişmiş Donut & İlerleme Listesi) */}
+                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg flex flex-col h-[360px]">
+                      <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                              <PieIcon className="w-4 h-4 text-purple-400"/> Gider Dağılımı ({selectedYear})
+                          </h3>
+                          {getPieData().length > 0 && (
+                              <span className="text-xs text-slate-400 font-mono">
+                                  {getPieData().length} Kategori • {formatCurrency(totalExpenseYear)}
+                              </span>
+                          )}
+                      </div>
+
+                      {getPieData().length === 0 ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs gap-2">
+                              <PieIcon className="w-10 h-10 opacity-20" />
+                              <span>Bu yıla ait harcama verisi bulunamadı.</span>
+                          </div>
+                      ) : (
+                          <div className="flex-1 flex flex-col sm:flex-row items-center gap-4 min-h-0">
+                              {/* Donut Grafik */}
+                              <div className="w-full sm:w-1/2 h-44 sm:h-full relative flex items-center justify-center">
+                                  <ResponsiveContainer width="100%" height="100%">
+                                      <PieChart>
+                                          <Pie 
+                                              data={getPieData()} 
+                                              cx="50%" 
+                                              cy="50%" 
+                                              innerRadius={50} 
+                                              outerRadius={75} 
+                                              paddingAngle={3} 
+                                              dataKey="value"
+                                          >
+                                              {getPieData().map((_, index) => (
+                                                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="#1e293b" strokeWidth={1} />
+                                              ))}
+                                          </Pie>
+                                          <Tooltip 
+                                              contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff', fontSize: '12px', borderRadius: '8px' }} 
+                                              formatter={(val: number) => [formatCurrency(val), 'Tutar']} 
+                                          />
+                                      </PieChart>
+                                  </ResponsiveContainer>
+                                  {/* Donut Ortası Başlık */}
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                      <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Toplam</span>
+                                      <span className="text-xs font-bold text-white font-mono">{formatCurrency(totalExpenseYear)}</span>
+                                  </div>
+                              </div>
+
+                              {/* Kaydırılabilir Kategori Dağılım Listesi & İlerleme Çubukları */}
+                              <div className="w-full sm:w-1/2 h-full overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                                  {getPieData().map((item, index) => {
+                                      const color = COLORS[index % COLORS.length];
+                                      const percent = totalExpenseYear > 0 ? ((item.value / totalExpenseYear) * 100).toFixed(1) : '0';
+                                      return (
+                                          <div key={item.name} className="bg-slate-900/60 p-2 rounded-lg border border-slate-700/50 hover:border-slate-600 transition-colors">
+                                              <div className="flex items-center justify-between text-xs mb-1">
+                                                  <div className="flex items-center gap-1.5 truncate mr-2">
+                                                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                                                      <span className="text-slate-200 font-medium truncate" title={item.name}>{item.name}</span>
+                                                  </div>
+                                                  <div className="flex items-center gap-2 shrink-0">
+                                                      <span className="font-mono font-bold text-white text-[11px]">{formatCurrency(item.value)}</span>
+                                                      <span className="text-[10px] text-purple-400 font-semibold bg-purple-950/60 px-1.5 py-0.5 rounded border border-purple-800/40 font-mono">
+                                                          %{percent}
+                                                      </span>
+                                                  </div>
+                                              </div>
+                                              {/* İlerleme Çubuğu */}
+                                              <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                                  <div 
+                                                      className="h-full rounded-full transition-all duration-500" 
+                                                      style={{ width: `${percent}%`, backgroundColor: color }} 
+                                                  />
+                                              </div>
+                                          </div>
+                                      );
+                                  })}
+                              </div>
+                          </div>
+                      )}
                   </div>
               </div>
           </div>
