@@ -91,8 +91,26 @@ const App = () => {
         const handleOpenSupport = () => setIsSupportOpen(true);
         window.addEventListener('open_support', handleOpenSupport);
 
+        // Otomatik Boşta Kalma Kilidi (15 Dakika İşlemsizlik Koruması)
+        const INACTIVITY_LIMIT_MS = 15 * 60 * 1000;
+        let idleTimer: NodeJS.Timeout;
+
+        const resetIdleTimer = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => {
+                alert('Güvenliğiniz için 15 dakika boyunca herhangi bir işlem yapılmadığından oturumunuz otomatik olarak sonlandırıldı.');
+                handleLogout();
+            }, INACTIVITY_LIMIT_MS);
+        };
+
+        const activityEvents = ['mousedown', 'keydown', 'scroll', 'touchstart'];
+        activityEvents.forEach(evt => window.addEventListener(evt, resetIdleTimer, { passive: true }));
+        resetIdleTimer();
+
         return () => {
             socket.disconnect();
+            if (idleTimer) clearTimeout(idleTimer);
+            activityEvents.forEach(evt => window.removeEventListener(evt, resetIdleTimer));
             window.removeEventListener('auth_error', handleAuthError);
             window.removeEventListener('open_support', handleOpenSupport);
         };

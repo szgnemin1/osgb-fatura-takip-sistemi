@@ -16,6 +16,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // Sadece kendi ağından veya yerel sunuculardan gelen CORS isteklerine izin ver
@@ -36,13 +37,19 @@ const PORT = process.env.PORT || 5000;
 // --- GÜÇLÜ VE DİNAMİK KRİPTOGRAFİK ANAHTAR YÖNETİMİ ---
 let JWT_SECRET = process.env.JWT_SECRET;
 let ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+let WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
+if (!WEBHOOK_SECRET) {
+    WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
+    process.env.WEBHOOK_SECRET = WEBHOOK_SECRET;
+}
 
 if (!JWT_SECRET || JWT_SECRET === 'osgb_pro_super_secret_key_2024') {
     JWT_SECRET = crypto.randomBytes(48).toString('hex');
     process.env.JWT_SECRET = JWT_SECRET;
     try {
         const envPath = path.join(__dirname, '.env');
-        const envContent = `# OSGB ProFinans & Cari Takip Sistemi Güvenlik Yapılandırması\nPORT=${PORT}\nJWT_SECRET=${JWT_SECRET}\nENCRYPTION_KEY=${crypto.randomBytes(32).toString('hex')}\nNODE_ENV=production\n`;
+        const envContent = `# OSGB ProFinans & Cari Takip Sistemi Güvenlik Yapılandırması\nPORT=${PORT}\nJWT_SECRET=${JWT_SECRET}\nENCRYPTION_KEY=${crypto.randomBytes(32).toString('hex')}\nWEBHOOK_SECRET=${WEBHOOK_SECRET}\nNODE_ENV=production\n`;
         fs.writeFileSync(envPath, envContent, 'utf-8');
         console.log('[Güvenlik] Güçlü dinamik JWT_SECRET oluşturuldu ve .env dosyasına kaydedildi.');
     } catch (_) {}
@@ -597,6 +604,43 @@ function recordFailedLogin(key) {
 
 function clearFailedLogin(key) {
     loginAttempts.delete(key);
+}
+
+// --- FATURA KESİM TERMİNALİ PIN BRUTE-FORCE KORUMASI ---
+const terminalAttempts = new Map();
+const MAX_TERMINAL_FAILURES = 5;
+const TERMINAL_LOCKOUT_MS = 15 * 60 * 1000; // 15 dakika kilit
+
+function checkTerminalLockout(ipAddr) {
+    const record = terminalAttempts.get(ipAddr);
+    if (!record) return { isLocked: false, remainingAttempts: MAX_TERMINAL_FAILURES };
+    const now = Date.now();
+    if (record.lockedUntil && now < record.lockedUntil) {
+        const remainingMinutes = Math.ceil((record.lockedUntil - now) / 60000);
+        return { isLocked: true, remainingMinutes };
+    }
+    if (record.lockedUntil && now >= record.lockedUntil) {
+        terminalAttempts.delete(ipAddr);
+        return { isLocked: false, remainingAttempts: MAX_TERMINAL_FAILURES };
+    }
+    return { isLocked: false, remainingAttempts: Math.max(0, MAX_TERMINAL_FAILURES - record.count) };
+}
+
+function recordTerminalFailure(ipAddr) {
+    const now = Date.now();
+    const record = terminalAttempts.get(ipAddr) || { count: 0, lockedUntil: null };
+    record.count += 1;
+    if (record.count >= MAX_TERMINAL_FAILURES) {
+        record.lockedUntil = now + TERMINAL_LOCKOUT_MS;
+        terminalAttempts.set(ipAddr, record);
+        return { isLocked: true, remainingMinutes: 15 };
+    }
+    terminalAttempts.set(ipAddr, record);
+    return { isLocked: false, remainingAttempts: Math.max(0, MAX_TERMINAL_FAILURES - record.count) };
+}
+
+function clearTerminalFailure(ipAddr) {
+    terminalAttempts.delete(ipAddr);
 }
 
 // --- LOGIN ENDPOINT ---
@@ -1574,9 +1618,18 @@ app.post('/api/batches/cancel', authenticateToken, async (req, res) => {
     }
 });
 
-// 5.4 Terminal Ekranı: Operatör Koduna Göre Fatura Listesini Getir (Şifresiz / PIN ile Giriş)
+// 5.4 Terminal Ekranı: Operatör Koduna Göre Fatura Listesini Getir (PIN Brute-Force Korumalı)
 app.get('/api/batches/terminal/:code', async (req, res) => {
     try {
+        const clientIp = req.ip || req.connection?.remoteAddress || 'client';
+        const termLock = checkTerminalLockout(clientIp);
+        if (termLock.isLocked) {
+            await logAuditEvent(req, 'TERMINAL_LOCKOUT', { ip: clientIp, remainingMinutes: termLock.remainingMinutes }, 'LOCKED');
+            return res.status(429).json({
+                error: `Çok fazla hatalı kod denemesi yapıldı. Terminal erişiminiz ${termLock.remainingMinutes} dakika kilitlendi.`
+            });
+        }
+
         const code = String(req.params.code).trim();
         const rows = await db.all("SELECT id, data FROM invoice_batches ORDER BY id DESC LIMIT 5");
         let activeBatch = null;
@@ -1597,8 +1650,17 @@ app.get('/api/batches/terminal/:code', async (req, res) => {
         }
 
         if (!activeBatch || !matchedOperator) {
-            return res.status(404).json({ error: 'Bu koda ait aktif bir fatura kesim görevi bulunamadı.' });
+            const failStat = recordTerminalFailure(clientIp);
+            if (failStat.isLocked) {
+                await logAuditEvent(req, 'TERMINAL_LOCKOUT', { ip: clientIp, remainingMinutes: failStat.remainingMinutes }, 'LOCKED');
+                return res.status(429).json({ error: `5 kez hatalı kod girildi. Terminal erişiminiz 15 dakika kilitlendi.` });
+            }
+            await logAuditEvent(req, 'TERMINAL_CODE_FAILED', { code, remainingAttempts: failStat.remainingAttempts }, 'FAILURE');
+            return res.status(404).json({ error: `Bu koda ait aktif bir fatura kesim görevi bulunamadı. Kalan deneme hakkı: ${failStat.remainingAttempts}` });
         }
+
+        clearTerminalFailure(clientIp);
+        await logAuditEvent(req, 'TERMINAL_CODE_SUCCESS', { operatorName: matchedOperator.name, code }, 'SUCCESS');
 
         // Firmaları çek (Vergi no, adres, unvan için)
         const firmRows = await db.all("SELECT id, data FROM firms");
@@ -1752,9 +1814,15 @@ app.post('/api/batches/terminal/unapprove', async (req, res) => {
     }
 });
 
-// 4. API: Dış Sistemden Gelen Webhook (Eksiksiz Tetkik Senkronizasyonu)
+// 4. API: Dış Sistemden Gelen Webhook (Yetkili & Güvenli Tetkik Senkronizasyonu)
 app.post('/api/webhook/health-services', async (req, res) => {
     try {
+        const clientSecret = req.headers['x-webhook-secret'] || req.query.secret;
+        if (WEBHOOK_SECRET && clientSecret !== WEBHOOK_SECRET) {
+            await logAuditEvent(req, 'WEBHOOK_UNAUTHORIZED', { ip: req.ip }, 'FAILURE');
+            return res.status(401).json({ error: 'Yetkisiz erişim: Geçersiz veya eksik Webhook Secret.' });
+        }
+
         const payload = req.body;
         const referrals = Array.isArray(payload) ? payload : [payload];
         
@@ -2128,6 +2196,41 @@ app.get('/api/security-status', authenticateToken, requireAdmin, async (req, res
     } catch (e) {
         console.error('Güvenlik durumu hatası:', e);
         res.status(500).json({ error: 'Güvenlik durumu alınamadı.' });
+    }
+});
+
+// --- KRİPTOLU KASA YEDEĞİ İNDİRME (Admin Only / Felaket Kurtarma) ---
+app.get('/api/backup/download-vault', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı bağlı değil' });
+
+        const firms = await db.all("SELECT * FROM firms");
+        const transactions = await db.all("SELECT * FROM transactions");
+        const batches = await db.all("SELECT * FROM invoice_batches");
+        const auditLogs = await db.all("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 500");
+        const users = readUsers();
+
+        const rawVault = JSON.stringify({
+            exportDate: new Date().toISOString(),
+            version: '2.2.0-secure-vault',
+            firms,
+            transactions,
+            batches,
+            auditLogs,
+            users: users.map(u => ({ ...u, password: u.password }))
+        });
+
+        // AES-256-GCM ile şifrele (Encryption-at-Rest / Vault)
+        const encryptedVault = encryptSecret(rawVault);
+        await logAuditEvent(req, 'VAULT_BACKUP_DOWNLOADED', { user: req.user.username }, 'SUCCESS');
+
+        const filename = `osgb_profinans_vault_${new Date().toISOString().slice(0, 10)}.enc`;
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.send(encryptedVault);
+    } catch (e) {
+        console.error('Vault backup hatası:', e);
+        res.status(500).json({ error: 'Kasa yedeği oluşturulamadı.' });
     }
 });
 
