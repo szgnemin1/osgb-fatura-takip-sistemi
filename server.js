@@ -3052,6 +3052,179 @@ async function initWhatsApp() {
                 io.emit('wa_status', { isConnected: true, qrCode: null, phoneNumber: waUserPhone });
             }
         });
+
+        // Gelen WhatsApp Mesajlarını Dinle (1: Mutabıkız, 2: Fark Var Yanıt Botu)
+        waSocket.ev.on('messages.upsert', async (chatUpdate) => {
+            try {
+                if (!db) return;
+                if (chatUpdate.type !== 'notify') return;
+
+                for (const msg of (chatUpdate.messages || [])) {
+                    if (!msg || msg.key.fromMe) continue;
+                    const remoteJid = msg.key.remoteJid;
+                    if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') continue;
+
+                    const text = (
+                        msg.message?.conversation ||
+                        msg.message?.extendedTextMessage?.text ||
+                        msg.message?.buttonsResponseMessage?.selectedButtonId ||
+                        msg.message?.templateButtonReplyMessage?.selectedId ||
+                        ''
+                    ).trim();
+
+                    if (!text) continue;
+
+                    const senderPhone = remoteJid.split('@')[0];
+                    const cleanPhone = String(senderPhone).replace(/[^0-9]/g, '');
+                    const last10 = cleanPhone.slice(-10);
+                    if (last10.length < 7) continue;
+
+                    // Bu numaraya ait aktif mutabakat kaydını bul
+                    let rec = await db.get(
+                        `SELECT * FROM reconciliations 
+                         WHERE phone LIKE ? 
+                         ORDER BY (CASE WHEN status IN ('SENT', 'PENDING_SEND') THEN 0 ELSE 1 END), id DESC LIMIT 1`,
+                        [`%${last10}%`]
+                    );
+
+                    if (!rec) {
+                        const firmRows = await db.all("SELECT id, data FROM firms");
+                        for (const row of firmRows) {
+                            try {
+                                const firmData = JSON.parse(row.data);
+                                const fPhoneClean = String(firmData.phone || '').replace(/[^0-9]/g, '');
+                                if (fPhoneClean && (fPhoneClean.endsWith(last10) || last10.endsWith(fPhoneClean.slice(-10)))) {
+                                    rec = await db.get(
+                                        `SELECT * FROM reconciliations 
+                                         WHERE firm_id = ? 
+                                         ORDER BY (CASE WHEN status IN ('SENT', 'PENDING_SEND') THEN 0 ELSE 1 END), id DESC LIMIT 1`,
+                                        [row.id]
+                                    );
+                                    if (rec) break;
+                                }
+                            } catch (_) {}
+                        }
+                    }
+
+                    if (!rec) continue;
+
+                    const firm = await getFirmById(rec.firm_id);
+                    const firmName = firm?.name || 'Değerli Müşterimiz';
+                    const lowerText = text.toLowerCase().trim();
+                    const now = new Date().toISOString();
+
+                    // DURUM 1: MUTABIKIZ (1, 1., mutabık, onay, evet, fark yok)
+                    const isApprove = 
+                        lowerText === '1' || lowerText === '1.' || lowerText.startsWith('1 ') ||
+                        lowerText.includes('mutabık') || lowerText.includes('mutabik') ||
+                        lowerText.includes('onay') || lowerText === 'evet' || lowerText.includes('fark yok') ||
+                        lowerText.includes('doğrudur') || lowerText.includes('dogrudur');
+
+                    if (isApprove) {
+                        await db.run(
+                            `UPDATE reconciliations 
+                             SET status = 'APPROVED', response_status = 'MUTABIK', response_at = ?, client_ip = 'WhatsApp Bot', updated_at = ?
+                             WHERE id = ?`,
+                            [now, now, rec.id]
+                        );
+
+                        io.emit('mutabakat_response_received', {
+                            token: rec.token,
+                            status: 'APPROVED',
+                            firmId: rec.firm_id
+                        });
+
+                        const replyMsg = 
+                            `✅ *Mutabakat Onayınız Alındı!*\n\n` +
+                            `Sayın Yetkili,\n` +
+                            `*${firmName}* firması adına *${rec.period}* dönemi cari hesap mutabakat onayınız başarıyla sisteme kaydedilmiştir.\n\n` +
+                            `İş birliğiniz için teşekkür eder, iyi çalışmalar dileriz. 🤝\n\n` +
+                            `*OSGB Finans & Muhasebe Yönetimi*`;
+
+                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatını ONAYLADI (Numara: ${senderPhone})`);
+                        continue;
+                    }
+
+                    // DURUM 2: FARK VAR (2, 2., fark var, itiraz, mutabık değiliz)
+                    const isDispute = 
+                        lowerText === '2' || lowerText === '2.' || lowerText.startsWith('2 ') ||
+                        lowerText.includes('fark var') || lowerText.includes('farkvar') ||
+                        lowerText.includes('itiraz') || lowerText.includes('uyuşmuyor') ||
+                        lowerText.includes('uyusmuyor') || lowerText.includes('mutabık değil') ||
+                        lowerText.includes('mutabik degil') || lowerText === 'hayır' || lowerText === 'hayir';
+
+                    if (isDispute) {
+                        let note = '';
+                        if (lowerText.startsWith('2 ') || lowerText.startsWith('2.') || lowerText.startsWith('2-')) {
+                            note = text.substring(2).trim();
+                        } else if (lowerText.length > 8 && !lowerText.startsWith('2')) {
+                            note = text;
+                        }
+
+                        await db.run(
+                            `UPDATE reconciliations 
+                             SET status = 'DISPUTED', response_status = 'FARK_VAR', response_note = ?, response_at = ?, client_ip = 'WhatsApp Bot', updated_at = ?
+                             WHERE id = ?`,
+                            [note || null, now, now, rec.id]
+                        );
+
+                        io.emit('mutabakat_response_received', {
+                            token: rec.token,
+                            status: 'DISPUTED',
+                            firmId: rec.firm_id
+                        });
+
+                        let replyMsg = '';
+                        if (note) {
+                            replyMsg = 
+                                `⚠️ *Mutabakat Fark Bildirimi Alındı*\n\n` +
+                                `Sayın Yetkili,\n` +
+                                `*${firmName}* adına ilettiğiniz itiraz açıklaması (*"${note.slice(0, 150)}"*) muhasebe ve finans ekibimize iletilmiştir.\n\n` +
+                                `Kayıtlarınız incelenerek en kısa sürede tarafınıza dönüş sağlanacaktır. Teşekkür ederiz.`;
+                        } else {
+                            replyMsg = 
+                                `⚠️ *Mutabakat Fark / İtiraz Bildirimi*\n\n` +
+                                `Sayın Yetkili,\n` +
+                                `*${firmName}* adına *${rec.period}* dönemi mutabakat itirazınız işleme alınmıştır.\n\n` +
+                                `📌 *Lütfen şirket kayıtlarınızdaki bakiye tutarını veya itiraz nedeninizi bu mesaja yanıt olarak yazınız.*\n\n` +
+                                `Finans ekibimiz ilettiğiniz not doğrultusunda mutabakatı inceleyecektir.`;
+                        }
+
+                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatına FARK VAR dedi (Numara: ${senderPhone})`);
+                        continue;
+                    }
+
+                    // DURUM 3: Zaten itiraz edilmiş ve açıklama bekleniyorsa
+                    if (rec.status === 'DISPUTED' && (!rec.response_note || rec.response_note.length === 0)) {
+                        await db.run(
+                            `UPDATE reconciliations 
+                             SET response_note = ?, updated_at = ?
+                             WHERE id = ?`,
+                            [text, now, rec.id]
+                        );
+
+                        io.emit('mutabakat_response_received', {
+                            token: rec.token,
+                            status: 'DISPUTED',
+                            firmId: rec.firm_id
+                        });
+
+                        const replyMsg = 
+                            `📩 *İtiraz Açıklamanız Kaydedildi*\n\n` +
+                            `İlettiğiniz not (*"${text.slice(0, 150)}"*) finans departmanımıza başarıyla aktarılmıştır.\n` +
+                            `İnceleme sonrasında sizinle iletişime geçilecektir. Teşekkür ederiz.`;
+
+                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        console.log(`[WhatsApp Chatbot] ${firmName} itiraz detayı iletti: ${text}`);
+                        continue;
+                    }
+                }
+            } catch (e) {
+                console.error('[WhatsApp Chatbot] Mesaj işleme hatası:', e);
+            }
+        });
     } catch (e) {
         console.error('[WhatsApp] Başlatma hatası:', e);
         isWaConnected = false;
@@ -3067,6 +3240,29 @@ function formatPhoneForWhatsApp(phone) {
     else if (!clean.startsWith('90') && clean.length === 10) clean = '90' + clean;
     if (clean.length === 12 && clean.startsWith('90')) return clean;
     return clean.length >= 10 ? clean : null;
+}
+
+function buildReconciliationCaption(firm, rec, approvalUrl) {
+    const balanceNum = Number(rec.balance) || 0;
+    let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
+    if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
+    else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
+
+    return (
+        `Sayın Yetkili (*${firm.name}*),\n\n` +
+        `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
+        `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
+        `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte resmi PDF olarak sunulmuştur.\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `⚡ *HIZLI YANIT (WhatsApp İçi)*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Bu mesaja doğrudan:\n` +
+        `👉 *1* yazıp gönderirseniz: *✅ Mutabıkız (Kayıtlar Doğru)*\n` +
+        `👉 *2* yazıp gönderirseniz: *❌ Fark Var (İtiraz Bildirimi)*\n\n` +
+        `Dilerseniz resmi mektubu incelemek ve web üzerinden butonlarla onaylamak için:\n` +
+        `🔗 ${approvalUrl}\n\n` +
+        `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`
+    );
 }
 
 // Resmi Mutabakat Mektubu PDF Üretici
@@ -3445,20 +3641,7 @@ app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, asy
         const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
         const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
 
-        const balanceNum = Number(rec.balance) || 0;
-        let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
-        if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
-        else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
-
-        const caption = 
-            `Sayın Yetkili (*${firm.name}*),\n\n` +
-            `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
-            `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
-            `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
-            `Kayıtlarınızın mutabakatını teyit etmek için lütfen aşağıdaki güvenli bağlantıya tıklayarak yanıtınızı iletiniz:\n\n` +
-            `🔗 ${approvalUrl}\n\n` +
-            `_(Kayıtlarınız mutabıksa "Mutabıkız", fark varsa "Fark Var" butonuna basabilirsiniz.)_\n\n` +
-            `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`;
+        const caption = buildReconciliationCaption(firm, rec, approvalUrl);
 
         const jid = `${targetPhone}@s.whatsapp.net`;
         await waSocket.sendMessage(jid, {
@@ -3525,20 +3708,7 @@ app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, asyn
 
                     const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
 
-                    const balanceNum = Number(rec.balance) || 0;
-                    let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
-                    if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
-                    else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
-
-                    const caption = 
-                        `Sayın Yetkili (*${firm.name}*),\n\n` +
-                        `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
-                        `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
-                        `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
-                        `Kayıtlarınızın mutabakatını teyit etmek için lütfen aşağıdaki güvenli bağlantıya tıklayarak yanıtınızı iletiniz:\n\n` +
-                        `🔗 ${approvalUrl}\n\n` +
-                        `_(Kayıtlarınız mutabıksa "Mutabıkız", fark varsa "Fark Var" butonuna basabilirsiniz.)_\n\n` +
-                        `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`;
+                    const caption = buildReconciliationCaption(firm, rec, approvalUrl);
 
                     const jid = `${targetPhone}@s.whatsapp.net`;
                     await waSocket.sendMessage(jid, {

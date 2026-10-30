@@ -86,9 +86,21 @@ export const Reconciliation: React.FC = () => {
     loadWhatsAppStatus();
     loadData();
 
-    // 5 saniyede bir WhatsApp durumunu kontrol et
+    // 5 saniyede bir WhatsApp durumu, 6 saniyede bir canlı mutabakat verilerini yenile
     const waInterval = setInterval(loadWhatsAppStatus, 5000);
-    return () => clearInterval(waInterval);
+    const dataInterval = setInterval(() => {
+      db.getReconciliations(selectedPeriod).then(data => {
+        if (data && data.items) {
+          setItems(data.items);
+          setStats(data.stats);
+        }
+      }).catch(() => {});
+    }, 6000);
+
+    return () => {
+      clearInterval(waInterval);
+      clearInterval(dataInterval);
+    };
   }, [selectedPeriod]);
 
   // Listeyi Döneme Göre Hesapla & Veritabanına Yaz
