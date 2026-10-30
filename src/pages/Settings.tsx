@@ -1162,9 +1162,9 @@ const Settings = () => {
       {/* MODAL: YENİ KULLANICI EKLEME */}
       {/* ======================================================== */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/70 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400">
                   <UserPlus className="w-4 h-4" />
@@ -1180,7 +1180,7 @@ const Settings = () => {
               </button>
             </div>
 
-            <form onSubmit={handleCreateUser} className="p-5 space-y-4">
+            <form onSubmit={handleCreateUser} className="p-4 sm:p-5 space-y-4 overflow-y-auto max-h-[calc(92vh-120px)]">
               {addUserError && (
                 <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1275,7 +1275,7 @@ const Settings = () => {
                 <button
                   type="submit"
                   disabled={isSubmittingAdd}
-                  className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-purple-900/30 flex items-center gap-1.5"
+                  className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-purple-900/30 flex items-center gap-1.5 cursor-pointer"
                 >
                   {isSubmittingAdd ? (
                     <>
@@ -1299,9 +1299,9 @@ const Settings = () => {
       {/* MODAL: KULLANICI DÜZENLEME & ŞİFRE SIFIRLAMA */}
       {/* ======================================================== */}
       {editingUser && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/70 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
                   <Edit2 className="w-4 h-4" />
@@ -1320,7 +1320,7 @@ const Settings = () => {
               </button>
             </div>
 
-            <form onSubmit={handleUpdateUser} className="p-5 space-y-4">
+            <form onSubmit={handleUpdateUser} className="p-4 sm:p-5 space-y-4 overflow-y-auto max-h-[calc(92vh-120px)]">
               {editUserError && (
                 <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1392,14 +1392,14 @@ const Settings = () => {
                 <button
                   type="button"
                   onClick={() => setEditingUser(null)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer"
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingEdit}
-                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-blue-900/30 flex items-center gap-1.5"
+                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-blue-900/30 flex items-center gap-1.5 cursor-pointer"
                 >
                   {isSubmittingEdit ? (
                     <>
@@ -1423,15 +1423,16 @@ const Settings = () => {
       {/* MODAL: GOOGLE AUTHENTICATOR (2FA) KURULUM MODALI */}
       {/* ======================================================== */}
       {show2FASetupModal && setup2FAData && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
-            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/70 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Google Authenticator (2FA) Kurulumu</h3>
+                  <h3 className="text-base sm:text-lg font-bold text-white">Google Authenticator (2FA) Kurulumu</h3>
                   <p className="text-xs text-slate-400">Hesabınızı iki adımlı doğrulama ile koruyun</p>
                 </div>
               </div>
@@ -1448,7 +1449,8 @@ const Settings = () => {
               </button>
             </div>
 
-            <form onSubmit={handleVerifyAndEnable2FA} className="p-6 space-y-5">
+            {/* Scrollable Form Body */}
+            <form onSubmit={handleVerifyAndEnable2FA} className="overflow-y-auto p-4 sm:p-5 space-y-4 max-h-[calc(92vh-130px)]">
               {setup2FAError && (
                 <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1456,103 +1458,113 @@ const Settings = () => {
                 </div>
               )}
 
-              {/* Adım 1 & 2 Açıklama */}
-              <div className="space-y-2 text-xs text-slate-300 leading-relaxed bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
-                <div className="flex items-start gap-2">
-                  <span className="w-5 h-5 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[11px]">1</span>
-                  <span>Telefonunuza <strong>Google Authenticator</strong> (veya Microsoft Authenticator) uygulamasını indirin.</span>
+              {/* 2 Sütunlu Kompakt Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 items-center">
+                {/* Sol Taraf: QR Kod ve Manuel Kod */}
+                <div className="flex flex-col items-center justify-center bg-slate-950/70 p-3.5 rounded-xl border border-slate-800 text-center space-y-2.5">
+                  <div className="p-2.5 bg-white rounded-xl shadow-md border-2 border-slate-700 inline-block">
+                    <QRCodeSVG
+                      value={setup2FAData.otpauthUrl}
+                      size={140}
+                      level="M"
+                      includeMargin={false}
+                    />
+                  </div>
+                  
+                  <div className="w-full">
+                    <div className="text-[11px] text-slate-400 mb-1">
+                      Kamera okumazsa manuel kod:
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg p-1.5">
+                      <input
+                        type="text"
+                        readOnly
+                        value={setup2FAData.secret}
+                        className="w-full bg-transparent text-emerald-400 font-mono text-[11px] outline-none select-all text-center tracking-wider"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(setup2FAData.secret);
+                          setCopiedSecret(true);
+                          setTimeout(() => setCopiedSecret(false), 2000);
+                        }}
+                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                        title="Kodu kopyala"
+                      >
+                        {copiedSecret ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedSecret ? 'Kopyalandı' : 'Kopyala'}</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-start gap-2">
-                  <span className="w-5 h-5 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[11px]">2</span>
-                  <span>Uygulamada <strong>"+"</strong> butonuna basıp <strong>"QR Kodunu Tara"</strong> seçeneğini seçerek aşağıdaki kodu okutun.</span>
+
+                {/* Sağ Taraf: Adımlar ve Doğrulama Kodu */}
+                <div className="space-y-3.5">
+                  <div className="space-y-2 text-xs text-slate-300 bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+                    <div className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[10px]">1</span>
+                      <span>Telefonda <strong>Google Authenticator</strong> uygulamasını açın.</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[10px]">2</span>
+                      <span><strong>"+"</strong> butonuna basıp <strong>QR Kodu</strong> taratın.</span>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="w-4 h-4 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[10px]">3</span>
+                      <span>Uygulamada oluşan <strong>6 haneli kodu</strong> aşağıya yazın:</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-200 mb-1 text-center">
+                      Telefonunuzdaki 6 Haneli Kodu Girin:
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={6}
+                      required
+                      autoFocus
+                      placeholder="000000"
+                      value={setup2FACode}
+                      onChange={(e) => setSetup2FACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className="w-full bg-slate-950 border border-emerald-500/50 rounded-xl py-2.5 text-center text-2xl font-mono tracking-widest text-emerald-400 outline-none focus:border-emerald-400 transition-colors"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShow2FASetupModal(false);
+                        setSetup2FAData(null);
+                        setSetup2FACode('');
+                      }}
+                      className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      İptal
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting2FA || setup2FACode.length !== 6}
+                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-emerald-900/30 flex items-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      {isSubmitting2FA ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Doğrulanıyor...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <span>Doğrula ve Aktif Et</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              {/* QR Kod Kutusu */}
-              <div className="flex flex-col items-center justify-center p-4 bg-white rounded-2xl shadow-inner max-w-[220px] mx-auto border-4 border-slate-800">
-                <QRCodeSVG
-                  value={setup2FAData.otpauthUrl}
-                  size={190}
-                  level="M"
-                  includeMargin={false}
-                />
-              </div>
-
-              {/* Manuel Giriş Anahtarı */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 mb-1 text-center">
-                  QR kodu okutamazsanız bu anahtarı uygulamaya elle girebilirsiniz:
-                </label>
-                <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value={setup2FAData.secret}
-                    className="w-full bg-transparent text-emerald-400 font-mono text-xs outline-none select-all text-center tracking-wider"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(setup2FAData.secret);
-                      setCopiedSecret(true);
-                      setTimeout(() => setCopiedSecret(false), 2000);
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 shrink-0 transition-colors"
-                  >
-                    {copiedSecret ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedSecret ? 'Kopyalandı' : 'Kopyala'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Adım 3: Kodu Girin */}
-              <div className="border-t border-slate-800 pt-4">
-                <label className="block text-xs font-semibold text-slate-200 mb-1.5 text-center">
-                  3. Uygulamada Görünen 6 Haneli Kodu Girin:
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  required
-                  autoFocus
-                  placeholder="000000"
-                  value={setup2FACode}
-                  onChange={(e) => setSetup2FACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  className="w-full bg-slate-950 border border-emerald-500/50 rounded-xl py-3 text-center text-2xl font-mono tracking-widest text-emerald-400 outline-none focus:border-emerald-400 transition-colors"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShow2FASetupModal(false);
-                    setSetup2FAData(null);
-                    setSetup2FACode('');
-                  }}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
-                >
-                  İptal
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting2FA || setup2FACode.length !== 6}
-                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-emerald-900/30 flex items-center gap-1.5"
-                >
-                  {isSubmitting2FA ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Doğrulanıyor...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      <span>Doğrula ve Aktif Et</span>
-                    </>
-                  )}
-                </button>
               </div>
             </form>
           </div>
@@ -1563,9 +1575,9 @@ const Settings = () => {
       {/* MODAL: 2FA DEVRE DIŞI BIRAKMA MODALI */}
       {/* ======================================================== */}
       {showDisable2FAModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/70 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-rose-600/20 border border-rose-500/30 flex items-center justify-center text-rose-400">
                   <ShieldOff className="w-5 h-5" />
@@ -1584,7 +1596,7 @@ const Settings = () => {
               </button>
             </div>
 
-            <form onSubmit={handleDisable2FA} className="p-5 space-y-4">
+            <form onSubmit={handleDisable2FA} className="p-4 sm:p-5 space-y-4 overflow-y-auto max-h-[calc(92vh-120px)]">
               {disable2FAError && (
                 <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -1615,14 +1627,14 @@ const Settings = () => {
                 <button
                   type="button"
                   onClick={() => setShowDisable2FAModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer"
                 >
                   Vazgeç
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingDisable2FA || !disable2FAPassword}
-                  className="bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-rose-900/30 flex items-center gap-1.5"
+                  className="bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-rose-900/30 flex items-center gap-1.5 cursor-pointer"
                 >
                   {isSubmittingDisable2FA ? (
                     <>
