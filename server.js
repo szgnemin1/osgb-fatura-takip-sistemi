@@ -3145,13 +3145,14 @@ function isDisputeText(text) {
                         `SELECT * FROM reconciliations 
                          WHERE phone LIKE ? 
                          ORDER BY 
-                            (CASE status 
-                                WHEN 'SENT' THEN 0 
-                                WHEN 'PENDING_SEND' THEN 1 
-                                WHEN 'DISPUTED' THEN 2 
-                                ELSE 3 
+                            (CASE 
+                                WHEN status = 'DISPUTED' AND (response_note IS NULL OR response_note = '') THEN 0 
+                                WHEN status = 'SENT' THEN 1 
+                                WHEN status = 'DISPUTED' THEN 2 
+                                WHEN status = 'PENDING_SEND' THEN 3 
+                                ELSE 4 
                             END), 
-                            id DESC 
+                            updated_at DESC, id DESC 
                          LIMIT 1`,
                         [`%${last10}%`]
                     );
@@ -3168,13 +3169,14 @@ function isDisputeText(text) {
                                         `SELECT * FROM reconciliations 
                                          WHERE firm_id = ? 
                                          ORDER BY 
-                                            (CASE status 
-                                                WHEN 'SENT' THEN 0 
-                                                WHEN 'PENDING_SEND' THEN 1 
-                                                WHEN 'DISPUTED' THEN 2 
-                                                ELSE 3 
+                                            (CASE 
+                                                WHEN status = 'DISPUTED' AND (response_note IS NULL OR response_note = '') THEN 0 
+                                                WHEN status = 'SENT' THEN 1 
+                                                WHEN status = 'DISPUTED' THEN 2 
+                                                WHEN status = 'PENDING_SEND' THEN 3 
+                                                ELSE 4 
                                             END), 
-                                            id DESC 
+                                            updated_at DESC, id DESC 
                                          LIMIT 1`,
                                         [row.id]
                                     );
@@ -3276,13 +3278,31 @@ function isDisputeText(text) {
                         continue;
                     }
 
-                    // DURUM 3: Zaten itiraz edilmiş ve açıklama bekleniyorsa gelen metni kaydet
-                    if (rec.status === 'DISPUTED' && (!rec.response_note || rec.response_note.length === 0)) {
+                    // DURUM 3: Zaten itiraz edilmiş ve açıklama/tutar bekleniyorsa gelen metni kaydet
+                    if (rec.status === 'DISPUTED') {
+                        // Sayısal bakiye tutarı tespiti (örn: 2000, 2000 TL, 15.000)
+                        const numMatch = text.match(/([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{1,2})?|[0-9]+(?:[.,][0-9]{1,2})?)/);
+                        let extractedBalance = rec.response_balance;
+                        if (numMatch && !['1', '2'].includes(numMatch[1])) {
+                            const cleanNum = numMatch[1].replace(/\./g, '').replace(',', '.');
+                            if (!isNaN(cleanNum)) extractedBalance = Number(cleanNum);
+                        }
+
+                        // Açıklama notunu birleştir veya güncelle
+                        let updatedNote = text;
+                        if (rec.response_note && rec.response_note.trim().length > 0) {
+                            if (!rec.response_note.includes(text)) {
+                                updatedNote = `${rec.response_note} | ${text}`;
+                            } else {
+                                updatedNote = rec.response_note;
+                            }
+                        }
+
                         await db.run(
                             `UPDATE reconciliations 
-                             SET response_note = ?, updated_at = ?
+                             SET response_note = ?, response_balance = ?, updated_at = ?
                              WHERE id = ?`,
-                            [text, now, rec.id]
+                            [updatedNote, extractedBalance, now, rec.id]
                         );
 
                         io.emit('mutabakat_response_received', {
@@ -3292,9 +3312,11 @@ function isDisputeText(text) {
                         });
 
                         const replyMsg = 
-                            `📩 *İtiraz Açıklamanız Kaydedildi*\n\n` +
-                            `İlettiğiniz not (*"${text.slice(0, 150)}"*) finans departmanımıza aktarılmıştır.\n` +
-                            `İnceleme sonrasında sizinle iletişime geçilecektir. Teşekkür ederiz.`;
+                            `📩 *İtiraz Bilgileriniz Kaydedildi*\n\n` +
+                            `Sayın Yetkili,\n` +
+                            `İlettiğiniz açıklama (*"${text.slice(0, 150)}"*) muhasebe ve finans ekibimize iletilmiştir.\n\n` +
+                            (extractedBalance ? `👉 *Kayıtlarınızdaki Bakiye:* ${Number(extractedBalance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL\n\n` : '') +
+                            `Gerekli kontroller sağlanıp tarafınıza dönüş yapılacaktır. Teşekkür ederiz.`;
 
                         try {
                             await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
@@ -3303,7 +3325,7 @@ function isDisputeText(text) {
                                 await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
                             }
                         }
-                        console.log(`[WhatsApp Chatbot] ${firmName} itiraz detayı iletti: ${text}`);
+                        console.log(`[WhatsApp Chatbot] ${firmName} itiraz detayı iletti: ${text} (Not: ${updatedNote})`);
                         continue;
                     }
                 }
@@ -3328,6 +3350,21 @@ function formatPhoneForWhatsApp(phone) {
     return clean.length >= 10 ? clean : null;
 }
 
+function getBaseUrl(req) {
+    if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
+    if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
+    
+    let host = req.headers['x-forwarded-host'] || req.get('host') || `127.0.0.1:${PORT}`;
+    const protocol = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
+    
+    // Eğer localhost veya 127.0.0.1 ise, yerel ağ IP'sini koy ki cep telefonu bağlanabilsin
+    if (host.includes('localhost') || host.includes('127.0.0.1')) {
+        host = `${ip.address()}:${PORT}`;
+    }
+    
+    return `${protocol}://${host}`;
+}
+
 function buildReconciliationCaption(firm, rec, approvalUrl) {
     const balanceNum = Number(rec.balance) || 0;
     let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
@@ -3346,7 +3383,8 @@ function buildReconciliationCaption(firm, rec, approvalUrl) {
         `👉 *1* yazıp gönderirseniz: *✅ Mutabıkız (Kayıtlar Doğru)*\n` +
         `👉 *2* yazıp gönderirseniz: *❌ Fark Var (İtiraz Bildirimi)*\n\n` +
         `Dilerseniz resmi mektubu incelemek ve web üzerinden butonlarla onaylamak için:\n` +
-        `🔗 ${approvalUrl}\n\n` +
+        `🌐 *Onay Bağlantısı:*\n` +
+        `${approvalUrl}\n\n` +
         `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`
     );
 }
@@ -3722,10 +3760,8 @@ app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, asy
         const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
         const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
 
-        // Host adresini al (Cloudflare Tunnel veya Yerel Ağ)
-        const host = req.get('host');
-        const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-        const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
+        // Host adresini al (Cloudflare Tunnel, Yerel Ağ veya Public URL)
+        const approvalUrl = `${getBaseUrl(req)}/mutabakat/${rec.token}`;
 
         const caption = buildReconciliationCaption(firm, rec, approvalUrl);
 
@@ -3771,8 +3807,7 @@ app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, asyn
             return res.status(400).json({ error: 'Gönderilecek telefon numarası olan firma bulunamadı.' });
         }
 
-        const host = req.get('host');
-        const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const baseUrl = getBaseUrl(req);
 
         // Arka planda kuyruk başlat
         (async () => {
@@ -3792,7 +3827,7 @@ app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, asyn
                     const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
                     const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
 
-                    const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
+                    const approvalUrl = `${baseUrl}/mutabakat/${rec.token}`;
 
                     const caption = buildReconciliationCaption(firm, rec, approvalUrl);
 
