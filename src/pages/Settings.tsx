@@ -5,11 +5,12 @@ import {
   Save, Upload, Download, Database, Trash2, AlertOctagon, RefreshCw, 
   TrendingUp, Percent, Landmark, Receipt, Users, UserPlus, Lock, KeyRound, 
   CheckCircle2, AlertCircle, Edit2, X, Eye, EyeOff, Loader2,
-  ShieldCheck, ShieldAlert, ShieldOff, QrCode, Copy, Check
+  ShieldCheck, ShieldAlert, ShieldOff, QrCode, Copy, Check,
+  Bot, Send, Power, HelpCircle, Plus
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
-import { GlobalSettings, AppUser } from '../types';
+import { GlobalSettings, AppUser, TelegramConfig, TelegramAllowedUser } from '../types';
 
 const Settings = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -17,7 +18,7 @@ const Settings = () => {
   const updatePriceInputRef = useRef<HTMLInputElement>(null);
     
   // Aktif Tab State
-  const [activeTab, setActiveTab] = useState<'users' | 'params' | 'pricing' | 'danger'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'params' | 'pricing' | 'danger' | 'telegram'>('users');
 
   // Mevcut Oturum Kullanıcısı
   const [currentUser, setCurrentUser] = useState(() => db.getCurrentUser());
@@ -82,6 +83,115 @@ const Settings = () => {
   const [editUserError, setEditUserError] = useState('');
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
 
+  // Telegram Bot State
+  const [telegramConfig, setTelegramConfig] = useState<TelegramConfig | null>(null);
+  const [isLoadingTelegram, setIsLoadingTelegram] = useState(false);
+  const [telegramTokenInput, setTelegramTokenInput] = useState('');
+  const [showTelegramToken, setShowTelegramToken] = useState(false);
+  const [isTelegramActive, setIsTelegramActive] = useState(false);
+  const [isSavingTelegram, setIsSavingTelegram] = useState(false);
+  const [isTestingTelegram, setIsTestingTelegram] = useState(false);
+  const [telegramSuccessMsg, setTelegramSuccessMsg] = useState('');
+  const [telegramErrorMsg, setTelegramErrorMsg] = useState('');
+
+  // Telegram Yetkili Ekleme State
+  const [newTelegramId, setNewTelegramId] = useState('');
+  const [newTelegramName, setNewTelegramName] = useState('');
+  const [isAddingTelegramUser, setIsAddingTelegramUser] = useState(false);
+  const [deletingTelegramUserId, setDeletingTelegramUserId] = useState<number | null>(null);
+  const [copiedTelegramId, setCopiedTelegramId] = useState<string | null>(null);
+
+  const loadTelegramConfig = async () => {
+    setIsLoadingTelegram(true);
+    setTelegramErrorMsg('');
+    try {
+      const cfg = await db.getTelegramConfig();
+      setTelegramConfig(cfg);
+      setIsTelegramActive(cfg.isActive);
+      if (cfg.maskedToken) {
+        setTelegramTokenInput(cfg.maskedToken);
+      }
+    } catch (err: any) {
+      console.error('Telegram ayarları yüklenemedi:', err);
+      setTelegramErrorMsg(err.message || 'Telegram ayarları yüklenemedi.');
+    } finally {
+      setIsLoadingTelegram(false);
+    }
+  };
+
+  const handleTestTelegramToken = async () => {
+    setIsTestingTelegram(true);
+    setTelegramErrorMsg('');
+    setTelegramSuccessMsg('');
+    try {
+      const res = await db.testTelegramBot(telegramTokenInput);
+      if (res.success && res.bot) {
+        setTelegramSuccessMsg(`Bağlantı Başarılı! Bot: @${res.bot.username} (${res.bot.first_name})`);
+      }
+    } catch (err: any) {
+      setTelegramErrorMsg(err.message || 'Bot bağlantısı kurulamadı. Tokenı kontrol edin.');
+    } finally {
+      setIsTestingTelegram(false);
+    }
+  };
+
+  const handleSaveTelegramConfig = async () => {
+    setIsSavingTelegram(true);
+    setTelegramErrorMsg('');
+    setTelegramSuccessMsg('');
+    try {
+      const res = await db.saveTelegramConfig({
+        token: telegramTokenInput,
+        isActive: isTelegramActive
+      });
+      setTelegramSuccessMsg(res.message || 'Ayarlar başarıyla kaydedildi!');
+      await loadTelegramConfig();
+    } catch (err: any) {
+      setTelegramErrorMsg(err.message || 'Ayar kaydedilirken bir hata oluştu.');
+    } finally {
+      setIsSavingTelegram(false);
+    }
+  };
+
+  const handleAddTelegramUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTelegramId.trim() || !newTelegramName.trim()) {
+      setTelegramErrorMsg('Lütfen Telegram ID ve İsim/Unvan alanlarını doldurun.');
+      return;
+    }
+    setIsAddingTelegramUser(true);
+    setTelegramErrorMsg('');
+    setTelegramSuccessMsg('');
+    try {
+      await db.addTelegramUser(newTelegramId.trim(), newTelegramName.trim());
+      setNewTelegramId('');
+      setNewTelegramName('');
+      setTelegramSuccessMsg('Yetkili kullanıcı başarıyla eklendi.');
+      await loadTelegramConfig();
+    } catch (err: any) {
+      setTelegramErrorMsg(err.message || 'Yetkili eklenemedi.');
+    } finally {
+      setIsAddingTelegramUser(false);
+    }
+  };
+
+  const handleDeleteTelegramUser = async (user: TelegramAllowedUser) => {
+    if (!window.confirm(`"${user.name}" (${user.telegram_id}) kullanıcısının bot erişim yetkisini kaldırmak istediğinize emin misiniz?`)) {
+      return;
+    }
+    setDeletingTelegramUserId(user.id);
+    setTelegramErrorMsg('');
+    try {
+      await db.deleteTelegramUser(user.id);
+      setTelegramSuccessMsg(`"${user.name}" yetkisi kaldırıldı.`);
+      await loadTelegramConfig();
+    } catch (err: any) {
+      setTelegramErrorMsg(err.message || 'Yetki silinemedi.');
+    } finally {
+      setDeletingTelegramUserId(null);
+    }
+  };
+
   const loadMe = async () => {
     try {
       const me = await db.getMe();
@@ -117,6 +227,12 @@ const Settings = () => {
     window.addEventListener('auth_user_updated', handleUserUpdate);
     return () => window.removeEventListener('auth_user_updated', handleUserUpdate);
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'telegram') {
+      loadTelegramConfig();
+    }
+  }, [activeTab]);
 
   // --- KENDİ BİLGİLERİNİ GÜNCELLE (KULLANICI ADI & ŞİFRE) ---
   const handleUpdateProfile = async (e: React.FormEvent) => {
@@ -526,6 +642,18 @@ const Settings = () => {
         >
           <TrendingUp className="w-4 h-4" />
           <span>Fiyat & Excel</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('telegram')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+            activeTab === 'telegram'
+              ? 'bg-sky-500 text-white shadow-lg shadow-sky-900/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Send className="w-4 h-4" />
+          <span>Telegram Bot</span>
         </button>
 
         <button
@@ -1156,6 +1284,398 @@ const Settings = () => {
             </button>
           </div>
         </section>
+      )}
+
+      {/* ======================================================== */}
+      {/* 5. SEKME: TELEGRAM BOTU & CARİ SORGULAMA YÖNETİMİ */}
+      {/* ======================================================== */}
+      {activeTab === 'telegram' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          
+          {/* Bildirim Mesajları */}
+          {telegramSuccessMsg && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+                <span className="font-medium">{telegramSuccessMsg}</span>
+              </div>
+              <button onClick={() => setTelegramSuccessMsg('')} className="text-emerald-400/60 hover:text-emerald-300">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {telegramErrorMsg && (
+            <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-4 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+                <span className="font-medium">{telegramErrorMsg}</span>
+              </div>
+              <button onClick={() => setTelegramErrorMsg('')} className="text-rose-400/60 hover:text-rose-300">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* 1. KART: BOT DURUMU VE TOKEN YAPILANDIRMASI */}
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                  <Bot className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                    Telegram Cari Botu Yapılandırması
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Çalışanlarınızın ve yetkililerinizin Telegram üzerinden firma bakiyesi sorgulaması ve PDF ekstre almasını sağlar.
+                  </p>
+                </div>
+              </div>
+
+              {/* Canlı Durum Rozeti */}
+              <div className="flex items-center gap-2 self-start sm:self-auto">
+                {isLoadingTelegram ? (
+                  <span className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-400 text-xs font-medium flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Yükleniyor...
+                  </span>
+                ) : telegramConfig?.isActive && telegramConfig?.isPollingRunning ? (
+                  <span className="px-3.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center gap-2 shadow-sm shadow-emerald-950">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Aktif & Çalışıyor {telegramConfig.botUsername && `(@${telegramConfig.botUsername})`}
+                  </span>
+                ) : telegramConfig?.isConfigured ? (
+                  <span className="px-3.5 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                    Durduruldu {telegramConfig.botUsername && `(@${telegramConfig.botUsername})`}
+                  </span>
+                ) : (
+                  <span className="px-3.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-400 text-xs font-medium flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+                    Yapılandırılmadı
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Token ve Butonlar Formu */}
+            <div className="pt-5 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Telegram Bot API Token <span className="text-sky-400">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showTelegramToken ? 'text' : 'password'}
+                    value={telegramTokenInput}
+                    onChange={(e) => setTelegramTokenInput(e.target.value)}
+                    placeholder="Örn: 7123456789:AAFlq... (Telegram @BotFather'dan alınan token)"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 pr-24 text-white text-xs sm:text-sm font-mono outline-none focus:border-sky-500 transition-colors"
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowTelegramToken(!showTelegramToken)}
+                      className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                      title={showTelegramToken ? 'Gizle' : 'Göster'}
+                    >
+                      {showTelegramToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                    {telegramTokenInput && !telegramTokenInput.includes('...') && (
+                      <button
+                        type="button"
+                        onClick={() => setTelegramTokenInput('')}
+                        className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition-colors"
+                        title="Temizle"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Telegram uygulamasında <b className="text-slate-400">@BotFather</b> ile konuşup <code className="text-sky-400">/newbot</code> komutu ile aldığınız API Token.
+                </p>
+              </div>
+
+              {/* Bot Servisi Açma / Kapama Toggle */}
+              <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${isTelegramActive ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+                    <Power className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs sm:text-sm font-semibold text-slate-200">
+                      Telegram Bot Servisini Çalıştır
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {isTelegramActive ? 'Bot aktif durumdadır, mesajları arka planda dinler.' : 'Bot durdurulmuştur, mesaj yanıtlamaz.'}
+                    </div>
+                  </div>
+                </div>
+
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isTelegramActive}
+                    onChange={(e) => setIsTelegramActive(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-sky-500"></div>
+                </label>
+              </div>
+
+              {/* Eylem Butonları */}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={handleTestTelegramToken}
+                  disabled={isTestingTelegram || !telegramTokenInput}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold flex items-center gap-2 border border-slate-700 transition-colors disabled:opacity-50"
+                >
+                  {isTestingTelegram ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                      <span>Test Ediliyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-4 h-4 text-sky-400" />
+                      <span>Bağlantıyı Test Et</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveTelegramConfig}
+                  disabled={isSavingTelegram}
+                  className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-lg shadow-sky-950/40 transition-all disabled:opacity-50"
+                >
+                  {isSavingTelegram ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Kaydediliyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>Ayarları Kaydet & {isTelegramActive ? 'Başlat' : 'Durdur'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* 2. KART: YETKİLİ TELEGRAM KULLANICILARI (ID TANITMA & SİLME) */}
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xl space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                    Yetkili Telegram Kullanıcıları
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Sadece burada tanımlı Telegram kullanıcıları bot üzerinden firma bakiyelerini ve PDF ekstrelerini sorgulayabilir.
+                  </p>
+                </div>
+              </div>
+              <span className="px-3 py-1 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs font-semibold self-start sm:self-auto">
+                {telegramConfig?.allowedUsers?.length || 0} Yetkili Tanımlı
+              </span>
+            </div>
+
+            {/* Güvenlik Bilgilendirme Uyarısı */}
+            <div className="bg-sky-950/20 border border-sky-800/40 rounded-xl p-3.5 flex items-start gap-3 text-xs text-slate-300">
+              <ShieldAlert className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+              <div>
+                <b className="text-sky-300">Sıfır Güvenlik Riski:</b> Buraya eklenmeyen yabancı bir kişi bota mesaj atsa bile sistem sorgu yapmasına izin vermez, finansal verileri gizler ve kişiye yalnızca kendi Telegram ID'sini göstererek yöneticisine başvurmasını söyler.
+              </div>
+            </div>
+
+            {/* Yeni Yetkili Ekleme Formu */}
+            <form onSubmit={handleAddTelegramUser} className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-sky-400" /> Yeni Yetkili Ekle
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Telegram ID Numarası <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newTelegramId}
+                    onChange={(e) => setNewTelegramId(e.target.value.replace(/[^0-9]/g, ''))}
+                    placeholder="Örn: 589218492"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs font-mono outline-none focus:border-sky-500 transition-colors"
+                  />
+                </div>
+
+                <div className="sm:col-span-5">
+                  <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                    Kişi / Unvan / Açıklama <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newTelegramName}
+                    onChange={(e) => setNewTelegramName(e.target.value)}
+                    placeholder="Örn: Ahmet Yılmaz (Muhasebe)"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-sky-500 transition-colors"
+                  />
+                </div>
+
+                <div className="sm:col-span-2 flex items-end">
+                  <button
+                    type="submit"
+                    disabled={isAddingTelegramUser || !newTelegramId.trim() || !newTelegramName.trim()}
+                    className="w-full bg-sky-500 hover:bg-sky-400 text-white font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-md shadow-sky-950 disabled:opacity-50"
+                  >
+                    {isAddingTelegramUser ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <>
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Yetki Ver</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            {/* Yetkili Kullanıcılar Tablosu */}
+            <div className="border border-slate-800 rounded-xl overflow-hidden bg-slate-950/40">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 border-b border-slate-800 text-slate-400">
+                  <tr>
+                    <th className="py-2.5 px-4 font-semibold">Kişi / Açıklama</th>
+                    <th className="py-2.5 px-4 font-semibold">Telegram ID</th>
+                    <th className="py-2.5 px-4 font-semibold hidden sm:table-cell">Kayıt Tarihi</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">İşlem</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {telegramConfig?.allowedUsers && telegramConfig.allowedUsers.length > 0 ? (
+                    telegramConfig.allowedUsers.map((user) => (
+                      <tr key={user.id} className="hover:bg-slate-900/60 transition-colors">
+                        <td className="py-3 px-4 font-medium text-slate-200">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center font-bold text-[10px]">
+                              {user.name.charAt(0).toUpperCase()}
+                            </div>
+                            <span>{user.name}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-slate-300 font-mono">
+                          <div className="flex items-center gap-2">
+                            <span>{user.telegram_id}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(user.telegram_id);
+                                setCopiedTelegramId(user.telegram_id);
+                                setTimeout(() => setCopiedTelegramId(null), 2000);
+                              }}
+                              className="text-slate-500 hover:text-slate-300 transition-colors p-1"
+                              title="ID Kopyala"
+                            >
+                              {copiedTelegramId === user.telegram_id ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-slate-400 hidden sm:table-cell">
+                          {user.created_at ? new Date(user.created_at).toLocaleDateString('tr-TR') : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTelegramUser(user)}
+                            disabled={deletingTelegramUserId === user.id}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                            title="Yetkiyi Kaldır / Sil"
+                          >
+                            {deletingTelegramUserId === user.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-rose-400" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="py-8 text-center text-slate-500">
+                        Henüz yetkilendirilmiş Telegram kullanıcısı bulunmuyor. Yukarıdaki formdan çalışanlarınızın Telegram ID'lerini ekleyebilirsiniz.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* 3. KART: ADIM ADIM HIZLI KURULUM REHBERİ */}
+          <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xl">
+            <h4 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2">
+              <HelpCircle className="w-4 h-4 text-sky-400" /> 4 Adımda Kolay Kurulum Kılavuzu
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-300">
+              <div className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1.5">
+                <div className="font-bold text-sky-400 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[11px]">1</span>
+                  Telegram'da Bot Oluşturun
+                </div>
+                <p className="text-slate-400">
+                  Telegram'ı açıp arama yerine <b className="text-white">@BotFather</b> yazın. Sohbeti başlatıp <code className="text-sky-300">/newbot</code> yazın ve botunuza bir isim ve kullanıcı adı verin.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1.5">
+                <div className="font-bold text-sky-400 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[11px]">2</span>
+                  Token'ı Sisteme Tanıtın
+                </div>
+                <p className="text-slate-400">
+                  BotFather'ın verdiği <code className="text-sky-300">API Token</code>'ı yukarıdaki kutucuğa yapıştırın. "Bağlantıyı Test Et" ve "Ayarları Kaydet & Başlat" butonuna basın.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1.5">
+                <div className="font-bold text-sky-400 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[11px]">3</span>
+                  Çalışan ID'lerini Ekleyin
+                </div>
+                <p className="text-slate-400">
+                  Çalışanlarınız Telegram'da bota veya <b className="text-white">@userinfobot</b>'a mesaj attığında sayısal ID numaralarını öğrenirler. Bu ID'yi yukarıdaki "Yeni Yetkili Ekle" formuna girin.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1.5">
+                <div className="font-bold text-sky-400 flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center text-[11px]">4</span>
+                  Bakiye & PDF Ekstre Alın
+                </div>
+                <p className="text-slate-400">
+                  Yetkili çalışanlarınız bota firma adını (örn: <b className="text-white">Tekstil</b>) yazdığında güncel borç/alacak kartı ve altında <b className="text-emerald-400">[📄 Cari Ekstre (PDF İndir)]</b> butonu çıkar!
+                </p>
+              </div>
+            </div>
+          </section>
+
+        </div>
       )}
 
       {/* ======================================================== */}

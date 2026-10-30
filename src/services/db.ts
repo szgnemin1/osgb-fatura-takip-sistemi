@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -668,6 +668,56 @@ export const db = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Doğrulama başarısız.');
+    return data;
+  },
+
+  // --- TELEGRAM BOT YÖNETİM METOTLARI ---
+  getTelegramConfig: async (): Promise<TelegramConfig> => {
+    const res = await fetchWithAuth('/api/telegram/config');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Telegram ayarları alınamadı.');
+    return data;
+  },
+
+  saveTelegramConfig: async (config: { token?: string; isActive: boolean }): Promise<{ success: boolean; isActive: boolean; botUsername: string; message: string }> => {
+    const res = await fetchWithAuth('/api/telegram/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Telegram ayarları kaydedilemedi.');
+    return data;
+  },
+
+  testTelegramBot: async (token?: string): Promise<{ success: boolean; bot?: { id: number; username: string; first_name: string } }> => {
+    const res = await fetchWithAuth('/api/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Bot testi başarısız.');
+    return data;
+  },
+
+  addTelegramUser: async (telegramId: string, name: string): Promise<{ success: boolean; user: TelegramAllowedUser }> => {
+    const res = await fetchWithAuth('/api/telegram/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegramId, name })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Yetkili eklenemedi.');
+    return data;
+  },
+
+  deleteTelegramUser: async (id: number | string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth(`/api/telegram/users/${id}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Yetkili silinemedi.');
     return data;
   }
 };

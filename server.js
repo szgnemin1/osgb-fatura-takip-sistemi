@@ -14,6 +14,8 @@ const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { jsPDF } = require('jspdf');
+require('jspdf-autotable');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -393,6 +395,19 @@ async function createDatabaseBackup() {
         status TEXT
     );`);
     await db.run('CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);');
+    await db.run(`CREATE TABLE IF NOT EXISTS telegram_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        bot_token TEXT,
+        is_active INTEGER DEFAULT 0,
+        bot_username TEXT,
+        updated_at TEXT
+    );`);
+    await db.run(`CREATE TABLE IF NOT EXISTS telegram_allowed_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );`);
     console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu & Güvenlik Denetim Tablosu Aktif).");
 
     // users.json içindeki 2FA gizli anahtarlarını AES-256-GCM ile şifrele (Migration)
@@ -423,6 +438,17 @@ async function createDatabaseBackup() {
     const currentMonthStart = `${y}-${m}-01`;
     const currentMonthEnd = `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
     await reconcileWithTetkik(currentMonthStart, currentMonthEnd, true);
+
+    // Otomatik Telegram Bot Başlatma (Aktif yapılandırılmışsa)
+    try {
+        const tgCfg = await db.get("SELECT * FROM telegram_config WHERE id = 1");
+        if (tgCfg && tgCfg.is_active === 1 && tgCfg.bot_token) {
+            console.log(`[Telegram Bot] Kayıtlı bot bulundu (@${tgCfg.bot_username || 'Bot'}), servis başlatılıyor...`);
+            runTelegramPollLoop(tgCfg.bot_token).catch(err => console.error('[Telegram Bot] Başlatma hatası:', err));
+        }
+    } catch (err) {
+        console.error('[Telegram Bot] Başlangıç hatası:', err);
+    }
 })();
 
 // JWT Middleware
@@ -2237,6 +2263,698 @@ app.get('/api/backup/download-vault', authenticateToken, requireAdmin, async (re
     } catch (e) {
         console.error('Vault backup hatası:', e);
         res.status(500).json({ error: 'Kasa yedeği oluşturulamadı.' });
+    }
+});
+
+// =========================================================================
+// TELEGRAM BOT ENTEGRASYONU (Cari Sorgulama, Bakiye Kartı & PDF Ekstre)
+// =========================================================================
+
+let telegramPollingAbort = null;
+let isTelegramPolling = false;
+
+// Türkçe karakterleri normalize et (Latin-1 / PDF uyumluluğu için)
+function replaceTR(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/Ğ/g, 'G').replace(/ğ/g, 'g')
+        .replace(/Ü/g, 'U').replace(/ü/g, 'u')
+        .replace(/Ş/g, 'S').replace(/ş/g, 's')
+        .replace(/İ/g, 'I').replace(/ı/g, 'i')
+        .replace(/Ö/g, 'O').replace(/ö/g, 'o')
+        .replace(/Ç/g, 'C').replace(/ç/g, 'c');
+}
+
+// Türkçe arama normalizasyonu (Büyük/küçük harf duyarsız arama)
+function turkishSearchNormalize(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/İ/g, 'i').replace(/I/g, 'ı')
+        .toLowerCase()
+        .trim();
+}
+
+function escapeTelegramHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+async function isTelegramUserAllowed(telegramId) {
+    if (!telegramId || !db) return false;
+    const row = await db.get("SELECT id FROM telegram_allowed_users WHERE telegram_id = ?", [String(telegramId)]);
+    return !!row;
+}
+
+async function searchFirmsInDb(query) {
+    if (!db) return [];
+    const rows = await db.all("SELECT id, data FROM firms");
+    const firms = rows.map(r => {
+        try {
+            const parsed = JSON.parse(r.data);
+            if (!parsed.id) parsed.id = r.id;
+            return parsed;
+        } catch (_) { return null; }
+    }).filter(Boolean);
+
+    const normQuery = turkishSearchNormalize(query);
+    const filtered = firms.filter(f => {
+        const normName = turkishSearchNormalize(f.name);
+        return normName.includes(normQuery);
+    });
+
+    filtered.sort((a, b) => {
+        const aStarts = turkishSearchNormalize(a.name).startsWith(normQuery);
+        const bStarts = turkishSearchNormalize(b.name).startsWith(normQuery);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+        return (a.name || '').localeCompare(b.name || '', 'tr');
+    });
+
+    return filtered;
+}
+
+async function getFirmById(firmId) {
+    if (!db) return null;
+    const row = await db.get("SELECT id, data FROM firms WHERE id = ?", [firmId]);
+    if (row) {
+        try {
+            const parsed = JSON.parse(row.data);
+            if (!parsed.id) parsed.id = row.id;
+            return parsed;
+        } catch (_) {}
+    }
+    const all = await db.all("SELECT id, data FROM firms");
+    for (const r of all) {
+        try {
+            const p = JSON.parse(r.data);
+            if (String(p.id) === String(firmId) || String(r.id) === String(firmId)) {
+                if (!p.id) p.id = r.id;
+                return p;
+            }
+        } catch (_) {}
+    }
+    return null;
+}
+
+async function getTransactionsForFirm(firmId) {
+    if (!db) return [];
+    const rows = await db.all("SELECT data FROM transactions WHERE data LIKE ?", [`%"firmId":"${firmId}"%`]);
+    return rows.map(r => {
+        try { return JSON.parse(r.data); } catch (_) { return null; }
+    }).filter(t => t && String(t.firmId) === String(firmId));
+}
+
+// Telegram Mesaj Gönderme
+async function sendTelegramMessage(token, chatId, text, extra = {}) {
+    try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text,
+                parse_mode: 'HTML',
+                ...extra
+            })
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('[Telegram API] Mesaj gönderme hatası:', e);
+        return { ok: false, error: e.message };
+    }
+}
+
+// Telegram Callback Yanıtlama (Yükleniyor bildirimleri ve uyarılar)
+async function answerTelegramCallbackQuery(token, callbackQueryId, text = '', showAlert = false) {
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                callback_query_id: callbackQueryId,
+                text,
+                show_alert: showAlert
+            })
+        });
+    } catch (_) {}
+}
+
+// Telegram Dosya (PDF) Gönderme
+async function sendTelegramDocument(token, chatId, fileBuffer, filename, caption) {
+    try {
+        const formData = new FormData();
+        formData.append('chat_id', String(chatId));
+        if (caption) formData.append('caption', caption);
+        formData.append('parse_mode', 'HTML');
+        const blob = new Blob([fileBuffer], { type: 'application/pdf' });
+        formData.append('document', blob, filename);
+
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+            method: 'POST',
+            body: formData
+        });
+        return await res.json();
+    } catch (e) {
+        console.error('[Telegram API] Belge gönderme hatası:', e);
+        return { ok: false, error: e.message };
+    }
+}
+
+// jsPDF ile Hafızada (In-Memory) Cari Ekstre PDF Oluşturma
+function generateFirmStatementPDF(firm, transactions) {
+    const doc = new jsPDF();
+    
+    // Üst Başlık
+    doc.setFontSize(20);
+    doc.setTextColor(30, 64, 175); // Royal Blue
+    doc.text("CARI HESAP EKSTRESI", 14, 20);
+
+    // Firma Bilgisi
+    doc.setFontSize(10);
+    doc.setTextColor(50, 50, 50);
+    doc.setFont("helvetica", "bold");
+    doc.text("Firma:", 14, 30);
+    doc.setFont("helvetica", "normal");
+    const firmNameLines = doc.splitTextToSize(replaceTR(firm.name || 'Bilinmeyen Firma'), 95);
+    doc.text(firmNameLines, 30, 30);
+
+    const afterNameY = 30 + (firmNameLines.length * 4.5);
+    doc.setFont("helvetica", "bold");
+    doc.text("Tarih:", 14, afterNameY);
+    doc.setFont("helvetica", "normal");
+    doc.text(new Date().toLocaleDateString('tr-TR'), 30, afterNameY);
+
+    // Onaylı Hareketler
+    const reportTrans = (transactions || []).filter(t => {
+        if (t.type === 'ÇEK' || t.type === 'CHEQUE') return t.chequeStatus === 'COLLECTED';
+        return t.status === 'APPROVED' || !t.status;
+    });
+
+    reportTrans.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    const totalBilled = reportTrans.filter(t => t.type === 'FATURA' || t.type === 'INVOICE').reduce((sum, t) => sum + (Number(t.debt) || 0), 0);
+    const totalPaid = reportTrans.reduce((sum, t) => sum + (Number(t.credit) || 0), 0);
+    const balance = totalBilled - totalPaid;
+
+    // Özet Finansal Kutu
+    const summaryY = 18;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(122, summaryY, 74, 26, 2, 2, 'FD');
+
+    doc.setFontSize(8.5);
+    doc.setTextColor(71, 85, 105);
+    doc.setFont("helvetica", "bold");
+    doc.text("Toplam Borc:", 126, summaryY + 6.5);
+    doc.text("Toplam Odenen:", 126, summaryY + 13);
+    doc.text("GUNCEL BAKIYE:", 126, summaryY + 21);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`${totalBilled.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 192, summaryY + 6.5, { align: 'right' });
+    doc.text(`${totalPaid.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 192, summaryY + 13, { align: 'right' });
+
+    doc.setFont("helvetica", "bold");
+    if (balance > 0) {
+        doc.setTextColor(220, 38, 38);
+        doc.text(`${balance.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 192, summaryY + 21, { align: 'right' });
+    } else if (balance < 0) {
+        doc.setTextColor(16, 185, 129);
+        doc.text(`${Math.abs(balance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 192, summaryY + 21, { align: 'right' });
+    } else {
+        doc.setTextColor(71, 85, 105);
+        doc.text("0.00 TL", 192, summaryY + 21, { align: 'right' });
+    }
+
+    doc.setTextColor(0, 0, 0);
+
+    const monthNames = ['Ocak', 'Subat', 'Mart', 'Nisan', 'Mayis', 'Haziran', 'Temmuz', 'Agustos', 'Eylul', 'Ekim', 'Kasim', 'Aralik'];
+    const rows = reportTrans.map(t => {
+        const d = new Date(t.date);
+        const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('tr-TR') : t.date;
+        const periodStr = t.month ? `${monthNames[t.month - 1] || t.month} ${t.year || ''}` : '-';
+        return [
+            replaceTR(periodStr),
+            dateStr,
+            replaceTR(t.description || '-'),
+            t.debt > 0 ? `${Number(t.debt).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : '-',
+            t.credit > 0 ? `${Number(t.credit).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : '-'
+        ];
+    });
+
+    const startY = Math.max(afterNameY + 8, summaryY + 31);
+
+    doc.autoTable({
+        startY,
+        head: [['Donem', 'Islem Tarihi', 'Aciklama', 'Borc (Fatura)', 'Alacak (Odeme)']],
+        body: rows,
+        styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 3.5 },
+        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+            0: { cellWidth: 26 },
+            1: { cellWidth: 24 },
+            2: { cellWidth: 'auto' },
+            3: { cellWidth: 32, halign: 'right' },
+            4: { cellWidth: 32, halign: 'right' }
+        },
+        theme: 'grid',
+        margin: { top: 10, left: 14, right: 14 },
+        foot: [[
+            'TOPLAM',
+            '',
+            '',
+            `${totalBilled.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`,
+            `${totalPaid.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`
+        ]],
+        footStyles: { fillColor: [226, 232, 240], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' },
+        didParseCell: function(data) {
+            if (data.section === 'foot' && data.column.index === 0) {
+                data.cell.styles.halign = 'left';
+            }
+        }
+    });
+
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.text(`OSGB ProFinans - Sayfa ${i} / ${pageCount}`, doc.internal.pageSize.width / 2, doc.internal.pageSize.height - 8, { align: 'center' });
+    }
+
+    return Buffer.from(doc.output('arraybuffer'));
+}
+
+// Firma Bakiye Kartı Gönderme
+async function sendFirmSummaryCard(token, chatId, firm) {
+    const transactions = await getTransactionsForFirm(firm.id);
+    const approvedTrans = transactions.filter(t => {
+        if (t.type === 'ÇEK' || t.type === 'CHEQUE') return t.chequeStatus === 'COLLECTED';
+        return t.status === 'APPROVED' || !t.status;
+    });
+
+    const totalBilled = approvedTrans.filter(t => t.type === 'FATURA' || t.type === 'INVOICE').reduce((sum, t) => sum + (Number(t.debt) || 0), 0);
+    const totalPaid = approvedTrans.reduce((sum, t) => sum + (Number(t.credit) || 0), 0);
+    const balance = totalBilled - totalPaid;
+
+    let lastTransInfo = 'Henüz işlem kaydı yok';
+    if (approvedTrans.length > 0) {
+        const sorted = [...approvedTrans].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        const last = sorted[0];
+        const d = new Date(last.date);
+        const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('tr-TR') : last.date;
+        lastTransInfo = `${dateStr} - ${last.description || last.type}`;
+    }
+
+    const balanceStr = `${balance.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL`;
+    let balanceBadge = '⚪ (Bakiye 0)';
+    if (balance > 0) balanceBadge = '🔴 (Borçlu)';
+    else if (balance < 0) balanceBadge = '🟢 (Alacaklı)';
+
+    const msg = 
+        `🏢 <b>${escapeTelegramHtml(firm.name)}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `💰 <b>GÜNCEL BAKİYE:</b> <code>${balanceStr}</code> ${balanceBadge}\n` +
+        `📄 <b>Toplam Fatura (Borç):</b> ${totalBilled.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL\n` +
+        `💳 <b>Toplam Tahsilat (Ödenen):</b> ${totalPaid.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL\n` +
+        `📅 <b>Son Hareket:</b> <i>${escapeTelegramHtml(lastTransInfo)}</i>\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
+
+    const inlineKeyboard = [
+        [
+            { text: '📄 Cari Ekstre (PDF İndir)', callback_data: `pdf_${firm.id}` }
+        ],
+        [
+            { text: '🔍 Yeni Firma Ara', callback_data: 'new_search' }
+        ]
+    ];
+
+    await sendTelegramMessage(token, chatId, msg, {
+        reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+}
+
+// Telegram Gelen İstek / Mesaj Yöneticisi
+async function handleTelegramUpdate(token, update) {
+    const message = update.message;
+    const callbackQuery = update.callback_query;
+
+    if (message && message.from) {
+        const telegramId = String(message.from.id);
+        const chatId = message.chat.id;
+
+        // Yetki Kontrolü
+        const isAllowed = await isTelegramUserAllowed(telegramId);
+        if (!isAllowed) {
+            const rejectMsg = 
+                `⛔ <b>Yetkisiz Erişim!</b>\n\n` +
+                `Telegram ID Numaranız: <code>${telegramId}</code>\n\n` +
+                `Bu bot yalnızca yetkilendirilmiş şirket personellerine ve yöneticilerine açıktır.\n` +
+                `Lütfen bu ID numaranızı sistem yöneticinize ileterek <b>Ayarlar > Telegram Bot</b> menüsünden eklemesini talep ediniz.`;
+            await sendTelegramMessage(token, chatId, rejectMsg);
+            return;
+        }
+
+        const text = (message.text || '').trim();
+        if (!text) return;
+
+        if (text === '/start' || text === '/yardim' || text === '/help') {
+            const welcomeMsg = 
+                `👋 Merhaba <b>${escapeTelegramHtml(message.from.first_name || 'Kullanıcı')}</b>!\n\n` +
+                `🏢 <b>OSGB Cari Bakiye & Ekstre Botu</b>'na hoş geldiniz.\n\n` +
+                `🔍 <b>Nasıl Kullanılır?</b>\n` +
+                `Sorgulamak istediğiniz firmanın adını veya adından bir kelimeyi buraya yazıp gönderin.\n\n` +
+                `<i>Örnek: Tekstil, Demir, MBM, Akın</i>`;
+            await sendTelegramMessage(token, chatId, welcomeMsg);
+            return;
+        }
+
+        // Firma Arama
+        const matchedFirms = await searchFirmsInDb(text);
+        if (matchedFirms.length === 0) {
+            const notFoundMsg = `❌ "<b>${escapeTelegramHtml(text)}</b>" ile eşleşen bir firma bulunamadı.\nLütfen firma adının farklı bir kelimesini deneyin.`;
+            await sendTelegramMessage(token, chatId, notFoundMsg);
+            return;
+        }
+
+        if (matchedFirms.length === 1) {
+            await sendFirmSummaryCard(token, chatId, matchedFirms[0]);
+            return;
+        }
+
+        const displayFirms = matchedFirms.slice(0, 10);
+        const inlineKeyboard = displayFirms.map(f => [
+            { text: `🏢 ${f.name.slice(0, 36)}`, callback_data: `f_${f.id}` }
+        ]);
+
+        let listMsg = `🔍 "<b>${escapeTelegramHtml(text)}</b>" için <b>${matchedFirms.length}</b> firma bulundu:\nLütfen durumunu görmek istediğiniz firmayı seçin 👇`;
+        if (matchedFirms.length > 10) {
+            listMsg += `\n<i>(İlk 10 firma listelenmiştir)</i>`;
+        }
+
+        await sendTelegramMessage(token, chatId, listMsg, {
+            reply_markup: { inline_keyboard: inlineKeyboard }
+        });
+        return;
+    }
+
+    if (callbackQuery && callbackQuery.from) {
+        const telegramId = String(callbackQuery.from.id);
+        const chatId = callbackQuery.message?.chat?.id;
+        const callbackId = callbackQuery.id;
+        const data = callbackQuery.data || '';
+
+        const isAllowed = await isTelegramUserAllowed(telegramId);
+        if (!isAllowed) {
+            await answerTelegramCallbackQuery(token, callbackId, '⛔ Yetkiniz bulunmuyor!', true);
+            return;
+        }
+
+        if (data.startsWith('f_')) {
+            const firmId = data.replace('f_', '');
+            const firm = await getFirmById(firmId);
+            if (!firm) {
+                await answerTelegramCallbackQuery(token, callbackId, 'Firma sistemde bulunamadı!', true);
+                return;
+            }
+            await answerTelegramCallbackQuery(token, callbackId);
+            await sendFirmSummaryCard(token, chatId, firm);
+            return;
+        }
+
+        if (data.startsWith('pdf_')) {
+            const firmId = data.replace('pdf_', '');
+            const firm = await getFirmById(firmId);
+            if (!firm) {
+                await answerTelegramCallbackQuery(token, callbackId, 'Firma sistemde bulunamadı!', true);
+                return;
+            }
+            await answerTelegramCallbackQuery(token, callbackId, '📄 PDF Ekstresi hazırlanıyor, lütfen bekleyin...');
+
+            try {
+                const trans = await getTransactionsForFirm(firmId);
+                const pdfBuffer = generateFirmStatementPDF(firm, trans);
+                const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+                const filename = `${safeName}_Cari_Ekstre.pdf`;
+                const caption = `📄 <b>${escapeTelegramHtml(firm.name)}</b>\nCari Hesap Ekstresi (${new Date().toLocaleDateString('tr-TR')})`;
+                await sendTelegramDocument(token, chatId, pdfBuffer, filename, caption);
+            } catch (pdfErr) {
+                console.error('[Telegram Bot] PDF oluşturma/gönderme hatası:', pdfErr);
+                await sendTelegramMessage(token, chatId, '⚠️ PDF ekstresi oluşturulurken bir hata meydana geldi.');
+            }
+            return;
+        }
+
+        if (data === 'new_search') {
+            await answerTelegramCallbackQuery(token, callbackId);
+            await sendTelegramMessage(token, chatId, '🔍 Lütfen aramak istediğiniz firmanın adını yazıp gönderin:');
+            return;
+        }
+    }
+}
+
+// Telegram Polling Döngüsü
+async function runTelegramPollLoop(token) {
+    if (isTelegramPolling) return;
+    isTelegramPolling = true;
+    telegramPollingAbort = new AbortController();
+    let offset = 0;
+    console.log('[Telegram Bot] Servis başlatıldı, gelen mesajlar dinleniyor...');
+
+    while (isTelegramPolling) {
+        try {
+            const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${offset}&timeout=20`;
+            const resp = await fetch(url, { signal: telegramPollingAbort.signal });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                console.warn('[Telegram Bot] getUpdates hatası:', resp.status, errData);
+                if (resp.status === 401 || resp.status === 404) {
+                    console.error('[Telegram Bot] Geçersiz bot tokenı, servis durduruluyor.');
+                    isTelegramPolling = false;
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 4000));
+                continue;
+            }
+
+            const data = await resp.json();
+            if (data.ok && Array.isArray(data.result)) {
+                for (const update of data.result) {
+                    offset = update.update_id + 1;
+                    handleTelegramUpdate(token, update).catch(e => {
+                        console.error('[Telegram Bot] Güncelleme hatası:', e);
+                    });
+                }
+            }
+        } catch (err) {
+            if (telegramPollingAbort?.signal?.aborted) {
+                console.log('[Telegram Bot] Polling güvenle sonlandırıldı.');
+                break;
+            }
+            await new Promise(r => setTimeout(r, 3000));
+        }
+    }
+    isTelegramPolling = false;
+}
+
+function stopTelegramBot() {
+    isTelegramPolling = false;
+    if (telegramPollingAbort) {
+        try { telegramPollingAbort.abort(); } catch (_) {}
+        telegramPollingAbort = null;
+    }
+    console.log('[Telegram Bot] Servis durduruldu.');
+}
+
+// --- TELEGRAM BOT YÖNETİM ENDPOİNTLERİ ---
+
+// 1. Ayarları ve Yetkili Listesini Getir
+app.get('/api/telegram/config', authenticateToken, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const config = await db.get("SELECT * FROM telegram_config WHERE id = 1");
+        const users = await db.all("SELECT * FROM telegram_allowed_users ORDER BY id DESC");
+
+        let maskedToken = '';
+        if (config && config.bot_token) {
+            const t = config.bot_token;
+            if (t.length > 10) {
+                maskedToken = t.slice(0, 6) + '...' + t.slice(-4);
+            } else {
+                maskedToken = '******';
+            }
+        }
+
+        res.json({
+            isConfigured: !!(config && config.bot_token),
+            isActive: config ? !!config.is_active : false,
+            botUsername: config ? (config.bot_username || '') : '',
+            maskedToken,
+            isPollingRunning: isTelegramPolling,
+            allowedUsers: users || []
+        });
+    } catch (e) {
+        console.error('Telegram config hatası:', e);
+        res.status(500).json({ error: 'Telegram ayarları okunamadı.' });
+    }
+});
+
+// 2. Token & Aktiflik Ayarını Kaydet (Başlat / Durdur)
+app.post('/api/telegram/config', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { token, isActive } = req.body;
+        let current = await db.get("SELECT * FROM telegram_config WHERE id = 1");
+
+        let finalToken = current?.bot_token || '';
+        if (token && !token.includes('...')) {
+            finalToken = token.trim();
+        }
+
+        let botUsername = current?.bot_username || '';
+        if (finalToken) {
+            const testRes = await fetch(`https://api.telegram.org/bot${finalToken}/getMe`);
+            const testData = await testRes.json();
+            if (testData.ok && testData.result) {
+                botUsername = testData.result.username || '';
+            } else if (isActive) {
+                return res.status(400).json({ error: 'Telegram Bot Token geçersiz! Lütfen @BotFather tarafından verilen tokenı kontrol edin.' });
+            }
+        } else if (isActive) {
+            return res.status(400).json({ error: 'Botu başlatmak için lütfen önce geçerli bir Telegram Bot Token giriniz.' });
+        }
+
+        const activeInt = isActive ? 1 : 0;
+        const now = new Date().toISOString();
+
+        if (current) {
+            await db.run(
+                "UPDATE telegram_config SET bot_token = ?, is_active = ?, bot_username = ?, updated_at = ? WHERE id = 1",
+                [finalToken, activeInt, botUsername, now]
+            );
+        } else {
+            await db.run(
+                "INSERT INTO telegram_config (id, bot_token, is_active, bot_username, updated_at) VALUES (1, ?, ?, ?, ?)",
+                [finalToken, activeInt, botUsername, now]
+            );
+        }
+
+        // Bot servisini yeniden başlat veya durdur
+        if (activeInt === 1 && finalToken) {
+            stopTelegramBot();
+            runTelegramPollLoop(finalToken).catch(err => console.error('[Telegram Bot] Başlatma hatası:', err));
+        } else {
+            stopTelegramBot();
+        }
+
+        await logAuditEvent(req, 'TELEGRAM_CONFIG_UPDATED', { isActive, botUsername }, 'SUCCESS');
+
+        res.json({
+            success: true,
+            isActive: activeInt === 1,
+            botUsername,
+            isPollingRunning: isTelegramPolling,
+            message: activeInt === 1 ? 'Telegram Bot başarıyla başlatıldı ve dinlemeye geçti!' : 'Telegram Bot durduruldu.'
+        });
+    } catch (e) {
+        console.error('Telegram ayar kaydetme hatası:', e);
+        res.status(500).json({ error: 'Ayarlar kaydedilemedi: ' + e.message });
+    }
+});
+
+// 3. Bot Token Bağlantısını Test Et
+app.post('/api/telegram/test', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        let { token } = req.body;
+        if (!token || token.includes('...')) {
+            const current = await db.get("SELECT bot_token FROM telegram_config WHERE id = 1");
+            token = current?.bot_token;
+        }
+        if (!token) {
+            return res.status(400).json({ error: 'Test edilecek bot token girilmedi.' });
+        }
+
+        const resp = await fetch(`https://api.telegram.org/bot${token.trim()}/getMe`);
+        const data = await resp.json();
+        if (data.ok && data.result) {
+            res.json({
+                success: true,
+                bot: {
+                    id: data.result.id,
+                    username: data.result.username,
+                    first_name: data.result.first_name
+                }
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                error: data.description || 'Geçersiz Bot Token'
+            });
+        }
+    } catch (e) {
+        res.status(500).json({ success: false, error: 'Telegram API bağlantı hatası: ' + e.message });
+    }
+});
+
+// 4. Yeni Yetkili Telegram Kullanıcısı Ekle
+app.post('/api/telegram/users', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { telegramId, name } = req.body;
+        if (!telegramId || !name) {
+            return res.status(400).json({ error: 'Telegram ID ve Yetkili Adı zorunludur.' });
+        }
+
+        const cleanId = String(telegramId).trim();
+        const cleanName = String(name).trim();
+
+        const existing = await db.get("SELECT id FROM telegram_allowed_users WHERE telegram_id = ?", [cleanId]);
+        if (existing) {
+            return res.status(400).json({ error: 'Bu Telegram ID zaten sistemde kayıtlı.' });
+        }
+
+        const now = new Date().toISOString();
+        const result = await db.run(
+            "INSERT INTO telegram_allowed_users (telegram_id, name, created_at) VALUES (?, ?, ?)",
+            [cleanId, cleanName, now]
+        );
+
+        await logAuditEvent(req, 'TELEGRAM_USER_ADDED', { telegramId: cleanId, name: cleanName }, 'SUCCESS');
+
+        res.json({
+            success: true,
+            user: {
+                id: result.lastID,
+                telegram_id: cleanId,
+                name: cleanName,
+                created_at: now
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'Yetkili eklenemedi: ' + e.message });
+    }
+});
+
+// 5. Yetkili Kullanıcıyı Sil
+app.delete('/api/telegram/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { id } = req.params;
+        const user = await db.get("SELECT * FROM telegram_allowed_users WHERE id = ?", [id]);
+        if (!user) {
+            return res.status(404).json({ error: 'Yetkili kullanıcı bulunamadı.' });
+        }
+
+        await db.run("DELETE FROM telegram_allowed_users WHERE id = ?", [id]);
+        await logAuditEvent(req, 'TELEGRAM_USER_REMOVED', { telegramId: user.telegram_id, name: user.name }, 'SUCCESS');
+
+        res.json({ success: true, message: 'Yetkili başarıyla silindi.' });
+    } catch (e) {
+        res.status(500).json({ error: 'Yetkili silinemedi: ' + e.message });
     }
 });
 

@@ -158,3 +158,21 @@ export interface AppUser {
   createdAt?: string;
   updatedAt?: string;
 }
+
+// --- TELEGRAM BOT TİPLERİ ---
+export interface TelegramConfig {
+  isConfigured: boolean;
+  isActive: boolean;
+  botUsername: string;
+  maskedToken: string;
+  isPollingRunning: boolean;
+  allowedUsers: TelegramAllowedUser[];
+}
+
+export interface TelegramAllowedUser {
+  id: number;
+  telegram_id: string;
+  name: string;
+  created_at: string;
+}
+
