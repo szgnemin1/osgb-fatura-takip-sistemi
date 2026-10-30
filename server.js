@@ -3053,41 +3053,111 @@ async function initWhatsApp() {
             }
         });
 
+// JID'den (LID veya s.whatsapp.net) gerçek telefon numarasını çözümle
+function resolvePhoneFromJid(jid) {
+    if (!jid) return null;
+    const pure = jid.split('@')[0].split(':')[0];
+    if (jid.endsWith('@s.whatsapp.net')) {
+        return pure.replace(/[^0-9]/g, '');
+    }
+    if (jid.endsWith('@lid')) {
+        try {
+            const lidFile = path.join(waAuthDir, `lid-mapping-${pure}_reverse.json`);
+            if (fs.existsSync(lidFile)) {
+                const phoneVal = JSON.parse(fs.readFileSync(lidFile, 'utf8'));
+                if (phoneVal) return String(phoneVal).replace(/[^0-9]/g, '');
+            }
+        } catch (_) {}
+    }
+    return pure.replace(/[^0-9]/g, '');
+}
+
+// WhatsApp mesaj gövdesini (metin, alıntı, ephemeral, medya başlığı vb.) eksiksiz çıkar
+function extractMessageText(msg) {
+    if (!msg || !msg.message) return '';
+    const m = msg.message;
+    const inner = m.ephemeralMessage?.message || 
+                  m.viewOnceMessage?.message || 
+                  m.viewOnceMessageV2?.message || 
+                  m.documentWithCaptionMessage?.message ||
+                  m;
+
+    return (
+        inner.conversation ||
+        inner.extendedTextMessage?.text ||
+        inner.imageMessage?.caption ||
+        inner.videoMessage?.caption ||
+        inner.documentMessage?.caption ||
+        inner.buttonsResponseMessage?.selectedButtonId ||
+        inner.templateButtonReplyMessage?.selectedId ||
+        inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
+        ''
+    ).trim();
+}
+
+function isApprovalText(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase().trim();
+    if (lower === '1' || lower === '1.' || lower.startsWith('1 ') || lower.startsWith('1-')) return true;
+    if (text.includes('1️⃣') || text.includes('👍') || text.includes('✅')) return true;
+    if (lower.includes('mutabık') || lower.includes('mutabik')) return true;
+    if (lower.includes('onay') || lower === 'evet' || lower.includes('fark yok')) return true;
+    if (lower.includes('doğrudur') || lower.includes('dogrudur') || lower.includes('dogru') || lower.includes('doğru')) return true;
+    return false;
+}
+
+function isDisputeText(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase().trim();
+    if (lower === '2' || lower === '2.' || lower.startsWith('2 ') || lower.startsWith('2-')) return true;
+    if (text.includes('2️⃣') || text.includes('❌') || text.includes('⚠️')) return true;
+    if (lower.includes('fark var') || lower.includes('farkvar')) return true;
+    if (lower.includes('itiraz') || lower.includes('uyuşmuyor') || lower.includes('uyusmuyor')) return true;
+    if (lower.includes('mutabık değil') || lower.includes('mutabik degil')) return true;
+    if (lower === 'hayır' || lower === 'hayir') return true;
+    return false;
+}
+
         // Gelen WhatsApp Mesajlarını Dinle (1: Mutabıkız, 2: Fark Var Yanıt Botu)
         waSocket.ev.on('messages.upsert', async (chatUpdate) => {
             try {
                 if (!db) return;
-                if (chatUpdate.type !== 'notify') return;
+                const msgs = chatUpdate.messages || [];
 
-                for (const msg of (chatUpdate.messages || [])) {
+                for (const msg of msgs) {
                     if (!msg || msg.key.fromMe) continue;
                     const remoteJid = msg.key.remoteJid;
                     if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') continue;
 
-                    const text = (
-                        msg.message?.conversation ||
-                        msg.message?.extendedTextMessage?.text ||
-                        msg.message?.buttonsResponseMessage?.selectedButtonId ||
-                        msg.message?.templateButtonReplyMessage?.selectedId ||
-                        ''
-                    ).trim();
-
+                    const text = extractMessageText(msg);
                     if (!text) continue;
 
-                    const senderPhone = remoteJid.split('@')[0];
-                    const cleanPhone = String(senderPhone).replace(/[^0-9]/g, '');
+                    const resolvedPhone = resolvePhoneFromJid(remoteJid);
+                    const cleanPhone = String(resolvedPhone || '').replace(/[^0-9]/g, '');
                     const last10 = cleanPhone.slice(-10);
+
+                    console.log(`[WhatsApp Gelen Mesaj] JID: ${remoteJid} | Çözülen Numara: ${resolvedPhone} (${last10}) | Metin: "${text}"`);
+
                     if (last10.length < 7) continue;
 
-                    // Bu numaraya ait aktif mutabakat kaydını bul
+                    // Bu numaraya ait en güncel aktif mutabakatı bul
                     let rec = await db.get(
                         `SELECT * FROM reconciliations 
                          WHERE phone LIKE ? 
-                         ORDER BY (CASE WHEN status IN ('SENT', 'PENDING_SEND') THEN 0 ELSE 1 END), id DESC LIMIT 1`,
+                         ORDER BY 
+                            (CASE status 
+                                WHEN 'SENT' THEN 0 
+                                WHEN 'PENDING_SEND' THEN 1 
+                                WHEN 'DISPUTED' THEN 2 
+                                ELSE 3 
+                            END), 
+                            id DESC 
+                         LIMIT 1`,
                         [`%${last10}%`]
                     );
 
                     if (!rec) {
+                        // Firmalar tablosundan da kontrol et
                         const firmRows = await db.all("SELECT id, data FROM firms");
                         for (const row of firmRows) {
                             try {
@@ -3097,7 +3167,15 @@ async function initWhatsApp() {
                                     rec = await db.get(
                                         `SELECT * FROM reconciliations 
                                          WHERE firm_id = ? 
-                                         ORDER BY (CASE WHEN status IN ('SENT', 'PENDING_SEND') THEN 0 ELSE 1 END), id DESC LIMIT 1`,
+                                         ORDER BY 
+                                            (CASE status 
+                                                WHEN 'SENT' THEN 0 
+                                                WHEN 'PENDING_SEND' THEN 1 
+                                                WHEN 'DISPUTED' THEN 2 
+                                                ELSE 3 
+                                            END), 
+                                            id DESC 
+                                         LIMIT 1`,
                                         [row.id]
                                     );
                                     if (rec) break;
@@ -3106,21 +3184,17 @@ async function initWhatsApp() {
                         }
                     }
 
-                    if (!rec) continue;
+                    if (!rec) {
+                        console.log(`[WhatsApp Chatbot] Bu numaraya (${resolvedPhone}) ait mutabakat kaydı bulunamadı.`);
+                        continue;
+                    }
 
                     const firm = await getFirmById(rec.firm_id);
                     const firmName = firm?.name || 'Değerli Müşterimiz';
-                    const lowerText = text.toLowerCase().trim();
                     const now = new Date().toISOString();
 
-                    // DURUM 1: MUTABIKIZ (1, 1., mutabık, onay, evet, fark yok)
-                    const isApprove = 
-                        lowerText === '1' || lowerText === '1.' || lowerText.startsWith('1 ') ||
-                        lowerText.includes('mutabık') || lowerText.includes('mutabik') ||
-                        lowerText.includes('onay') || lowerText === 'evet' || lowerText.includes('fark yok') ||
-                        lowerText.includes('doğrudur') || lowerText.includes('dogrudur');
-
-                    if (isApprove) {
+                    // DURUM 1: MUTABIKIZ / ONAY
+                    if (isApprovalText(text)) {
                         await db.run(
                             `UPDATE reconciliations 
                              SET status = 'APPROVED', response_status = 'MUTABIK', response_at = ?, client_ip = 'WhatsApp Bot', updated_at = ?
@@ -3141,24 +3215,24 @@ async function initWhatsApp() {
                             `İş birliğiniz için teşekkür eder, iyi çalışmalar dileriz. 🤝\n\n` +
                             `*OSGB Finans & Muhasebe Yönetimi*`;
 
-                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
-                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatını ONAYLADI (Numara: ${senderPhone})`);
+                        try {
+                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        } catch (sendErr) {
+                            if (resolvedPhone) {
+                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
+                            }
+                        }
+                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatını ONAYLADI (Numara: ${resolvedPhone})`);
                         continue;
                     }
 
-                    // DURUM 2: FARK VAR (2, 2., fark var, itiraz, mutabık değiliz)
-                    const isDispute = 
-                        lowerText === '2' || lowerText === '2.' || lowerText.startsWith('2 ') ||
-                        lowerText.includes('fark var') || lowerText.includes('farkvar') ||
-                        lowerText.includes('itiraz') || lowerText.includes('uyuşmuyor') ||
-                        lowerText.includes('uyusmuyor') || lowerText.includes('mutabık değil') ||
-                        lowerText.includes('mutabik degil') || lowerText === 'hayır' || lowerText === 'hayir';
-
-                    if (isDispute) {
+                    // DURUM 2: FARK VAR / İTİRAZ
+                    if (isDisputeText(text)) {
+                        const lower = text.toLowerCase().trim();
                         let note = '';
-                        if (lowerText.startsWith('2 ') || lowerText.startsWith('2.') || lowerText.startsWith('2-')) {
+                        if (lower.startsWith('2 ') || lower.startsWith('2.') || lower.startsWith('2-')) {
                             note = text.substring(2).trim();
-                        } else if (lowerText.length > 8 && !lowerText.startsWith('2')) {
+                        } else if (text.length > 8 && !lower.startsWith('2')) {
                             note = text;
                         }
 
@@ -3191,12 +3265,18 @@ async function initWhatsApp() {
                                 `Finans ekibimiz ilettiğiniz not doğrultusunda mutabakatı inceleyecektir.`;
                         }
 
-                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
-                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatına FARK VAR dedi (Numara: ${senderPhone})`);
+                        try {
+                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        } catch (sendErr) {
+                            if (resolvedPhone) {
+                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
+                            }
+                        }
+                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatına FARK VAR dedi (Numara: ${resolvedPhone})`);
                         continue;
                     }
 
-                    // DURUM 3: Zaten itiraz edilmiş ve açıklama bekleniyorsa
+                    // DURUM 3: Zaten itiraz edilmiş ve açıklama bekleniyorsa gelen metni kaydet
                     if (rec.status === 'DISPUTED' && (!rec.response_note || rec.response_note.length === 0)) {
                         await db.run(
                             `UPDATE reconciliations 
@@ -3213,10 +3293,16 @@ async function initWhatsApp() {
 
                         const replyMsg = 
                             `📩 *İtiraz Açıklamanız Kaydedildi*\n\n` +
-                            `İlettiğiniz not (*"${text.slice(0, 150)}"*) finans departmanımıza başarıyla aktarılmıştır.\n` +
+                            `İlettiğiniz not (*"${text.slice(0, 150)}"*) finans departmanımıza aktarılmıştır.\n` +
                             `İnceleme sonrasında sizinle iletişime geçilecektir. Teşekkür ederiz.`;
 
-                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        try {
+                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                        } catch (sendErr) {
+                            if (resolvedPhone) {
+                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
+                            }
+                        }
                         console.log(`[WhatsApp Chatbot] ${firmName} itiraz detayı iletti: ${text}`);
                         continue;
                     }
