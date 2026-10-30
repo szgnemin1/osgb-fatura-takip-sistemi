@@ -3357,9 +3357,18 @@ function getBaseUrl(req) {
     let host = req.headers['x-forwarded-host'] || req.get('host') || `127.0.0.1:${PORT}`;
     const protocol = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
     
-    // Eğer localhost veya 127.0.0.1 ise, yerel ağ IP'sini koy ki cep telefonu bağlanabilsin
+    // Eğer localhost veya 127.0.0.1 ise, yerel ağ IP'sini nip.io domainiyle wrap et (WhatsApp'ta linkin port ile kesilmemesi için)
     if (host.includes('localhost') || host.includes('127.0.0.1')) {
-        host = `${ip.address()}:${PORT}`;
+        const lanIp = ip.address();
+        host = `${lanIp}.nip.io:${PORT}`;
+    } else {
+        // Eğer doğrudan IP verilmişse (ör: 192.168.1.105:5000), WhatsApp IP portunu kestiği için domain formatına çevir
+        const hostParts = host.split(':');
+        const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+        if (ipRegex.test(hostParts[0])) {
+            const portSuffix = hostParts[1] ? `:${hostParts[1]}` : '';
+            host = `${hostParts[0]}.nip.io${portSuffix}`;
+        }
     }
     
     return `${protocol}://${host}`;
