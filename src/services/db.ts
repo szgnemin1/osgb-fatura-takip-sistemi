@@ -590,7 +590,7 @@ export const db = {
     return await res.json();
   },
 
-  createUser: async (userData: { username: string; password: string; role: 'admin' | 'user' }): Promise<any> => {
+  createUser: async (userData: { username: string; password: string; role: 'admin' | 'user'; twoFactorEnabled?: boolean }): Promise<any> => {
     const res = await fetchWithAuth('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -601,7 +601,7 @@ export const db = {
     return data;
   },
 
-  updateUser: async (id: number | string, userData: { username?: string; password?: string; role?: 'admin' | 'user' }): Promise<any> => {
+  updateUser: async (id: number | string, userData: { username?: string; password?: string; role?: 'admin' | 'user'; twoFactorEnabled?: boolean }): Promise<any> => {
     const res = await fetchWithAuth(`/api/users/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -618,6 +618,56 @@ export const db = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Kullanıcı silinemedi.');
+    return data;
+  },
+
+  // --- 2FA (GOOGLE AUTHENTICATOR) METOTLARI ---
+  setup2FA: async (): Promise<{ secret: string; otpauthUrl: string; username: string }> => {
+    const res = await fetchWithAuth('/api/2fa/setup', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '2FA kurulumu başlatılamadı.');
+    return data;
+  },
+
+  verifyAndEnable2FA: async (secret: string, code: string): Promise<any> => {
+    const res = await fetchWithAuth('/api/2fa/verify-and-enable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret, code })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '2FA doğrulanamadı.');
+    return data;
+  },
+
+  disable2FA: async (currentPassword: string): Promise<any> => {
+    const res = await fetchWithAuth('/api/2fa/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '2FA devre dışı bırakılamadı.');
+    return data;
+  },
+
+  resetUser2FA: async (userId: number | string): Promise<any> => {
+    const res = await fetchWithAuth(`/api/users/${userId}/reset-2fa`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '2FA sıfırlanamadı.');
+    return data;
+  },
+
+  loginWith2FA: async (tempToken: string, code: string): Promise<{ token: string; username: string; role: string }> => {
+    const res = await fetch('/api/login/2fa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken, code })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Doğrulama başarısız.');
     return data;
   }
 };

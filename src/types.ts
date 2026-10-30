@@ -154,6 +154,7 @@ export interface AppUser {
   id: number | string;
   username: string;
   role: 'admin' | 'user';
+  twoFactorEnabled?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

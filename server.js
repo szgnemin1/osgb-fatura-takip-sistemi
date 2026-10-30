@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const helmet = require('helmet');
@@ -296,13 +297,231 @@ function writeUsers(users) {
     fs.writeFileSync(usersPath, JSON.stringify(users, null, 2), 'utf-8');
 }
 
+// --- RFC 6238 TOTP (Google Authenticator) ALTYAPISI ---
+const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buffer) {
+    let bits = 0;
+    let value = 0;
+    let output = '';
+    for (let i = 0; i < buffer.length; i++) {
+        value = (value << 8) | buffer[i];
+        bits += 8;
+        while (bits >= 5) {
+            output += BASE32_CHARS[(value >>> (bits - 5)) & 31];
+            bits -= 5;
+        }
+    }
+    if (bits > 0) output += BASE32_CHARS[(value << (5 - bits)) & 31];
+    return output;
+}
+
+function base32Decode(str) {
+    str = String(str || '').replace(/=+$/, '').toUpperCase().replace(/[\s-]/g, '');
+    let bits = 0;
+    let value = 0;
+    const bytes = [];
+    for (let i = 0; i < str.length; i++) {
+        const val = BASE32_CHARS.indexOf(str[i]);
+        if (val === -1) continue;
+        value = (value << 5) | val;
+        bits += 5;
+        if (bits >= 8) {
+            bytes.push((value >>> (bits - 8)) & 255);
+            bits -= 8;
+        }
+    }
+    return Buffer.from(bytes);
+}
+
+function generateTOTPSecret(length = 20) {
+    return base32Encode(crypto.randomBytes(length));
+}
+
+function generateHOTP(secretBuffer, counter) {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64BE(BigInt(counter));
+    const hmac = crypto.createHmac('sha1', secretBuffer).update(buf).digest();
+    const offset = hmac[hmac.length - 1] & 0x0f;
+    const code = (
+        ((hmac[offset] & 0x7f) << 24) |
+        ((hmac[offset + 1] & 0xff) << 16) |
+        ((hmac[offset + 2] & 0xff) << 8) |
+        (hmac[offset + 3] & 0xff)
+    ) % 1000000;
+    return code.toString().padStart(6, '0');
+}
+
+function verifyTOTP(token, secret, window = 1) {
+    if (!token || !secret) return false;
+    const cleanToken = String(token).trim().replace(/\s/g, '');
+    if (cleanToken.length !== 6 || !/^\d{6}$/.test(cleanToken)) return false;
+    const step = 30;
+    const currentTime = Math.floor(Date.now() / 1000 / step);
+    try {
+        const secretBuffer = base32Decode(secret);
+        for (let errorWindow = -window; errorWindow <= window; errorWindow++) {
+            const calculated = generateHOTP(secretBuffer, currentTime + errorWindow);
+            if (calculated === cleanToken) return true;
+        }
+    } catch (_) {
+        return false;
+    }
+    return false;
+}
+
+// --- HATALI GİRİŞ KİLİDİ (BRUTE-FORCE SALDIRI ÖNLEME) ---
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 dakika kilit
+const loginAttempts = new Map();
+
+function getAttemptKey(req, username) {
+    const ipAddr = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'client';
+    const cleanUser = String(username || '').trim().toLowerCase();
+    return `${ipAddr}:::${cleanUser}`;
+}
+
+function checkLoginLockout(key) {
+    const record = loginAttempts.get(key);
+    if (!record) return { isLocked: false, remainingAttempts: MAX_FAILED_ATTEMPTS };
+
+    const now = Date.now();
+    if (record.lockedUntil && now < record.lockedUntil) {
+        const remainingMinutes = Math.ceil((record.lockedUntil - now) / 60000);
+        return { isLocked: true, remainingMinutes };
+    }
+
+    if (record.lockedUntil && now >= record.lockedUntil) {
+        loginAttempts.delete(key);
+        return { isLocked: false, remainingAttempts: MAX_FAILED_ATTEMPTS };
+    }
+
+    return { 
+        isLocked: false, 
+        remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count) 
+    };
+}
+
+function recordFailedLogin(key) {
+    const now = Date.now();
+    const record = loginAttempts.get(key) || { count: 0, lockedUntil: null, lastAttempt: now };
+    record.count += 1;
+    record.lastAttempt = now;
+
+    if (record.count >= MAX_FAILED_ATTEMPTS) {
+        record.lockedUntil = now + LOCKOUT_DURATION_MS;
+        loginAttempts.set(key, record);
+        return { isLocked: true, remainingMinutes: 15 };
+    }
+
+    loginAttempts.set(key, record);
+    return { 
+        isLocked: false, 
+        remainingAttempts: Math.max(0, MAX_FAILED_ATTEMPTS - record.count) 
+    };
+}
+
+function clearFailedLogin(key) {
+    loginAttempts.delete(key);
+}
+
 // --- LOGIN ENDPOINT ---
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
+    const cleanUser = (username || '').trim();
+    const key = getAttemptKey(req, cleanUser);
+
+    // 1. Kilit Kontrolü
+    const lockout = checkLoginLockout(key);
+    if (lockout.isLocked) {
+        return res.status(429).json({
+            error: `Çok fazla hatalı giriş denemesi yapıldı. Hesabınız ${lockout.remainingMinutes} dakika kilitlendi. Lütfen bekleyiniz.`
+        });
+    }
+
     const users = readUsers();
     if (!users || users.length === 0) return res.status(500).json({ error: 'Kullanıcı veritabanı bulunamadı.' });
-    const user = users.find(u => u.username.toLowerCase() === (username || '').trim().toLowerCase());
-    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(400).json({ error: 'Hatalı kullanıcı adı veya şifre.' });
+
+    const user = users.find(u => u.username.toLowerCase() === cleanUser.toLowerCase());
+    if (!user || !bcrypt.compareSync(password || '', user.password)) {
+        const failStatus = recordFailedLogin(key);
+        if (failStatus.isLocked) {
+            return res.status(429).json({
+                error: `5 kez hatalı giriş yapıldı. Güvenliğiniz için hesabınız ${failStatus.remainingMinutes} dakika süreyle kilitlendi.`
+            });
+        }
+        return res.status(400).json({
+            error: `Hatalı kullanıcı adı veya şifre. Kalan deneme hakkı: ${failStatus.remainingAttempts}`
+        });
+    }
+
+    // 2. Şifre Doğru! Eğer 2FA (Google Authenticator) Aktifse:
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+        const tempToken = jwt.sign(
+            { id: user.id, username: user.username, role: user.role || 'user', purpose: '2fa_login' },
+            JWT_SECRET,
+            { expiresIn: '5m' }
+        );
+        return res.json({
+            require2FA: true,
+            tempToken,
+            username: user.username,
+            message: 'Lütfen Google Authenticator uygulamanızdaki 6 haneli doğrulama kodunu giriniz.'
+        });
+    }
+
+    // 2FA yoksa giriş başarılı
+    clearFailedLogin(key);
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+    res.json({ token, username: user.username, role: user.role || 'user' });
+});
+
+// --- 2FA İLE GİRİŞİ TAMAMLAMA ENDPOINT'İ ---
+app.post('/api/login/2fa', (req, res) => {
+    const { tempToken, code } = req.body;
+    if (!tempToken || !code) {
+        return res.status(400).json({ error: 'Doğrulama kodu ve oturum anahtarı gereklidir.' });
+    }
+
+    let payload;
+    try {
+        payload = jwt.verify(tempToken, JWT_SECRET);
+        if (payload.purpose !== '2fa_login') {
+            return res.status(401).json({ error: 'Geçersiz 2FA oturumu.' });
+        }
+    } catch (_) {
+        return res.status(401).json({ error: 'Doğrulama oturumu zaman aşımına uğradı. Lütfen kullanıcı adı ve şifrenizle baştan giriş yapınız.' });
+    }
+
+    const key = getAttemptKey(req, payload.username);
+    const lockout = checkLoginLockout(key);
+    if (lockout.isLocked) {
+        return res.status(429).json({
+            error: `Çok fazla hatalı kod denemesi yapıldı. Hesabınız ${lockout.remainingMinutes} dakika kilitlendi.`
+        });
+    }
+
+    const users = readUsers();
+    const user = users.find(u => u.id === payload.id);
+    if (!user || !user.twoFactorSecret) {
+        return res.status(404).json({ error: 'Kullanıcı veya 2FA yapılandırması bulunamadı.' });
+    }
+
+    const isValid = verifyTOTP(code, user.twoFactorSecret, 1);
+    if (!isValid) {
+        const failStatus = recordFailedLogin(key);
+        if (failStatus.isLocked) {
+            return res.status(429).json({
+                error: `5 kez hatalı kod girildi. Hesabınız ${failStatus.remainingMinutes} dakika kilitlendi.`
+            });
+        }
+        return res.status(400).json({
+            error: `Hatalı doğrulama kodu. Google Authenticator'daki güncel kodu giriniz. Kalan deneme hakkı: ${failStatus.remainingAttempts}`
+        });
+    }
+
+    // 2FA Kodu Doğru!
+    clearFailedLogin(key);
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ token, username: user.username, role: user.role || 'user' });
 });
@@ -312,7 +531,13 @@ app.get('/api/me', authenticateToken, (req, res) => {
     const users = readUsers();
     const user = users.find(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
     if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
-    res.json({ id: user.id, username: user.username, role: user.role || 'user', createdAt: user.createdAt || null });
+    res.json({ 
+        id: user.id, 
+        username: user.username, 
+        role: user.role || 'user', 
+        twoFactorEnabled: !!user.twoFactorEnabled,
+        createdAt: user.createdAt || null 
+    });
 });
 
 // --- KULLANICI KENDİ BİLGİLERİNİ GÜNCELLEME (Kullanıcı Adı / Şifre Değiştirme) ---
@@ -381,6 +606,91 @@ app.post('/api/users/change-credentials', authenticateToken, (req, res) => {
     }
 });
 
+// --- 2FA (GOOGLE AUTHENTICATOR) KURULUMU VE YÖNETİMİ ---
+app.post('/api/2fa/setup', authenticateToken, (req, res) => {
+    try {
+        const users = readUsers();
+        const user = users.find(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
+        if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+        const secret = generateTOTPSecret(20);
+        const appName = 'OSGB ProFinans';
+        const otpauthUrl = `otpauth://totp/${encodeURIComponent(appName)}:${encodeURIComponent(user.username)}?secret=${secret}&issuer=${encodeURIComponent(appName)}`;
+
+        res.json({
+            secret,
+            otpauthUrl,
+            username: user.username
+        });
+    } catch (e) {
+        console.error('2FA kurulum hatası:', e);
+        res.status(500).json({ error: '2FA kurulumu başlatılamadı.' });
+    }
+});
+
+app.post('/api/2fa/verify-and-enable', authenticateToken, (req, res) => {
+    try {
+        const { secret, code } = req.body;
+        if (!secret || !code) {
+            return res.status(400).json({ error: 'Gizli anahtar ve 6 haneli doğrulama kodu gereklidir.' });
+        }
+
+        const isValid = verifyTOTP(code, secret, 1);
+        if (!isValid) {
+            return res.status(400).json({ error: 'Doğrulama kodu hatalı. Lütfen Google Authenticator uygulamasındaki 6 haneli kodu tekrar kontrol ediniz.' });
+        }
+
+        const users = readUsers();
+        const userIndex = users.findIndex(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
+        if (userIndex === -1) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+        users[userIndex].twoFactorEnabled = true;
+        users[userIndex].twoFactorSecret = secret;
+        users[userIndex].twoFactorActivatedAt = new Date().toISOString();
+        writeUsers(users);
+
+        res.json({
+            success: true,
+            message: 'Google Authenticator (2FA) başarıyla aktif edildi. Artık girişlerde 6 haneli kod istenecektir.'
+        });
+    } catch (e) {
+        console.error('2FA aktif etme hatası:', e);
+        res.status(500).json({ error: '2FA aktif edilemedi.' });
+    }
+});
+
+app.post('/api/2fa/disable', authenticateToken, (req, res) => {
+    try {
+        const { currentPassword } = req.body;
+        if (!currentPassword) {
+            return res.status(400).json({ error: '2FA kapatmak için mevcut şifrenizi girmelisiniz.' });
+        }
+
+        const users = readUsers();
+        const userIndex = users.findIndex(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
+        if (userIndex === -1) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+        const user = users[userIndex];
+        if (!bcrypt.compareSync(currentPassword, user.password)) {
+            return res.status(400).json({ error: 'Mevcut şifreniz hatalı.' });
+        }
+
+        user.twoFactorEnabled = false;
+        user.twoFactorSecret = null;
+        user.twoFactorDisabledAt = new Date().toISOString();
+        users[userIndex] = user;
+        writeUsers(users);
+
+        res.json({
+            success: true,
+            message: 'İki Adımlı Doğrulama (2FA) devre dışı bırakıldı.'
+        });
+    } catch (e) {
+        console.error('2FA devre dışı bırakma hatası:', e);
+        res.status(500).json({ error: '2FA devre dışı bırakılamadı.' });
+    }
+});
+
 // --- KULLANICI LİSTESİ ---
 app.get('/api/users', authenticateToken, (req, res) => {
     try {
@@ -389,6 +699,7 @@ app.get('/api/users', authenticateToken, (req, res) => {
             id: u.id,
             username: u.username,
             role: u.role || 'user',
+            twoFactorEnabled: !!u.twoFactorEnabled,
             createdAt: u.createdAt || null,
             updatedAt: u.updatedAt || null
         })));
@@ -404,7 +715,7 @@ app.post('/api/users', authenticateToken, (req, res) => {
             return res.status(403).json({ error: 'Yeni kullanıcı ekleme yetkisi sadece yöneticilere aittir.' });
         }
 
-        const { username, password, role = 'user' } = req.body;
+        const { username, password, role = 'user', twoFactorEnabled = false } = req.body;
         if (!username || !username.trim()) {
             return res.status(400).json({ error: 'Kullanıcı adı gereklidir.' });
         }
@@ -422,11 +733,15 @@ app.post('/api/users', authenticateToken, (req, res) => {
             return res.status(400).json({ error: 'Bu kullanıcı adı zaten mevcut.' });
         }
 
+        const secret = twoFactorEnabled ? generateTOTPSecret(20) : null;
+
         const newUser = {
             id: Date.now(),
             username: trimmed,
             password: bcrypt.hashSync(password.trim(), 10),
             role: role === 'admin' ? 'admin' : 'user',
+            twoFactorEnabled: !!twoFactorEnabled,
+            twoFactorSecret: secret,
             createdAt: new Date().toISOString()
         };
 
@@ -440,6 +755,7 @@ app.post('/api/users', authenticateToken, (req, res) => {
                 id: newUser.id,
                 username: newUser.username,
                 role: newUser.role,
+                twoFactorEnabled: newUser.twoFactorEnabled,
                 createdAt: newUser.createdAt
             }
         });
@@ -457,7 +773,7 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
         }
 
         const targetId = req.params.id;
-        const { username, password, role } = req.body;
+        const { username, password, role, twoFactorEnabled } = req.body;
         const users = readUsers();
         const userIndex = users.findIndex(u => String(u.id) === String(targetId));
         if (userIndex === -1) {
@@ -489,6 +805,18 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
             user.role = role === 'admin' ? 'admin' : 'user';
         }
 
+        if (typeof twoFactorEnabled === 'boolean') {
+            if (!twoFactorEnabled) {
+                user.twoFactorEnabled = false;
+                user.twoFactorSecret = null;
+            } else if (!user.twoFactorSecret) {
+                user.twoFactorSecret = generateTOTPSecret(20);
+                user.twoFactorEnabled = true;
+            } else {
+                user.twoFactorEnabled = true;
+            }
+        }
+
         user.updatedAt = new Date().toISOString();
         users[userIndex] = user;
         writeUsers(users);
@@ -496,11 +824,45 @@ app.put('/api/users/:id', authenticateToken, (req, res) => {
         res.json({
             success: true,
             message: 'Kullanıcı bilgileri güncellendi.',
-            user: { id: user.id, username: user.username, role: user.role, updatedAt: user.updatedAt }
+            user: { 
+                id: user.id, 
+                username: user.username, 
+                role: user.role, 
+                twoFactorEnabled: !!user.twoFactorEnabled, 
+                updatedAt: user.updatedAt 
+            }
         });
     } catch (e) {
         console.error('Kullanıcı güncelleme hatası:', e);
         res.status(500).json({ error: 'Kullanıcı güncellenemedi.' });
+    }
+});
+
+// --- KULLANICI 2FA SIFIRLAMA (Admin) ---
+app.post('/api/users/:id/reset-2fa', authenticateToken, (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Bu işlem sadece yöneticilere aittir.' });
+        }
+
+        const targetId = req.params.id;
+        const users = readUsers();
+        const userIndex = users.findIndex(u => String(u.id) === String(targetId));
+        if (userIndex === -1) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+        }
+
+        users[userIndex].twoFactorEnabled = false;
+        users[userIndex].twoFactorSecret = null;
+        users[userIndex].twoFactorResetAt = new Date().toISOString();
+        writeUsers(users);
+
+        res.json({
+            success: true,
+            message: `"${users[userIndex].username}" kullanıcısının 2FA doğrulaması başarıyla sıfırlandı.`
+        });
+    } catch (e) {
+        res.status(500).json({ error: '2FA sıfırlanamadı.' });
     }
 });
 

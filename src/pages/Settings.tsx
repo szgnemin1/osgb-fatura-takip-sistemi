@@ -4,8 +4,10 @@ import { exporter } from '../services/exporter';
 import { 
   Save, Upload, Download, Database, Trash2, AlertOctagon, RefreshCw, 
   TrendingUp, Percent, Landmark, Receipt, Users, UserPlus, Lock, KeyRound, 
-  CheckCircle2, AlertCircle, Edit2, X, Eye, EyeOff, Loader2
+  CheckCircle2, AlertCircle, Edit2, X, Eye, EyeOff, Loader2,
+  ShieldCheck, ShieldAlert, ShieldOff, QrCode, Copy, Check
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
 import { GlobalSettings, AppUser } from '../types';
 
@@ -47,12 +49,27 @@ const Settings = () => {
   const [profileErrorMsg, setProfileErrorMsg] = useState('');
   const [isSubmittingProfile, setIsSubmittingProfile] = useState(false);
 
+  // 2FA (Google Authenticator) State
+  const [meUser, setMeUser] = useState<AppUser | null>(null);
+  const [show2FASetupModal, setShow2FASetupModal] = useState(false);
+  const [setup2FAData, setSetup2FAData] = useState<{ secret: string; otpauthUrl: string; username: string } | null>(null);
+  const [setup2FACode, setSetup2FACode] = useState('');
+  const [setup2FAError, setSetup2FAError] = useState('');
+  const [isSubmitting2FA, setIsSubmitting2FA] = useState(false);
+  const [copiedSecret, setCopiedSecret] = useState(false);
+
+  const [showDisable2FAModal, setShowDisable2FAModal] = useState(false);
+  const [disable2FAPassword, setDisable2FAPassword] = useState('');
+  const [disable2FAError, setDisable2FAError] = useState('');
+  const [isSubmittingDisable2FA, setIsSubmittingDisable2FA] = useState(false);
+
   // Yeni Kullanıcı Ekleme Modalı State
   const [showAddModal, setShowAddModal] = useState(false);
   const [addUsername, setAddUsername] = useState('');
   const [addPassword, setAddPassword] = useState('');
   const [addPasswordConfirm, setAddPasswordConfirm] = useState('');
   const [addRole, setAddRole] = useState<'admin' | 'user'>('user');
+  const [addTwoFactor, setAddTwoFactor] = useState(false);
   const [addUserError, setAddUserError] = useState('');
   const [isSubmittingAdd, setIsSubmittingAdd] = useState(false);
 
@@ -61,8 +78,16 @@ const Settings = () => {
   const [editUsername, setEditUsername] = useState('');
   const [editPassword, setEditPassword] = useState('');
   const [editRole, setEditRole] = useState<'admin' | 'user'>('user');
+  const [editTwoFactor, setEditTwoFactor] = useState(false);
   const [editUserError, setEditUserError] = useState('');
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+
+  const loadMe = async () => {
+    try {
+      const me = await db.getMe();
+      setMeUser(me);
+    } catch (_) {}
+  };
 
   const loadUsers = async () => {
     setIsLoadingUsers(true);
@@ -78,6 +103,7 @@ const Settings = () => {
 
   useEffect(() => {
     setGlobalSettings(db.getGlobalSettings());
+    loadMe();
     loadUsers();
 
     const handleUserUpdate = (e: any) => {
@@ -86,6 +112,7 @@ const Settings = () => {
       } else {
         setCurrentUser(db.getCurrentUser());
       }
+      loadMe();
     };
     window.addEventListener('auth_user_updated', handleUserUpdate);
     return () => window.removeEventListener('auth_user_updated', handleUserUpdate);
@@ -145,6 +172,87 @@ const Settings = () => {
     }
   };
 
+  // --- 2FA (GOOGLE AUTHENTICATOR) İŞLEMLERİ ---
+  const handleStart2FASetup = async () => {
+    setSetup2FAError('');
+    setSetup2FACode('');
+    setCopiedSecret(false);
+    setIsSubmitting2FA(true);
+    try {
+      const data = await db.setup2FA();
+      setSetup2FAData(data);
+      setShow2FASetupModal(true);
+    } catch (err: any) {
+      alert(err.message || '2FA kurulumu başlatılamadı.');
+    } finally {
+      setIsSubmitting2FA(false);
+    }
+  };
+
+  const handleVerifyAndEnable2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!setup2FAData || !setup2FACode.trim()) {
+      setSetup2FAError('Lütfen 6 haneli kodu giriniz.');
+      return;
+    }
+
+    setSetup2FAError('');
+    setIsSubmitting2FA(true);
+    try {
+      await db.verifyAndEnable2FA(setup2FAData.secret, setup2FACode.trim());
+      setShow2FASetupModal(false);
+      setSetup2FAData(null);
+      setSetup2FACode('');
+      await loadMe();
+      await loadUsers();
+      alert('Google Authenticator (2FA) başarıyla aktif edildi!');
+    } catch (err: any) {
+      setSetup2FAError(err.message || 'Doğrulama kodu hatalı.');
+    } finally {
+      setIsSubmitting2FA(false);
+    }
+  };
+
+  const handleDisable2FA = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!disable2FAPassword) {
+      setDisable2FAError('Lütfen mevcut şifrenizi giriniz.');
+      return;
+    }
+
+    setDisable2FAError('');
+    setIsSubmittingDisable2FA(true);
+    try {
+      await db.disable2FA(disable2FAPassword);
+      setShowDisable2FAModal(false);
+      setDisable2FAPassword('');
+      await loadMe();
+      await loadUsers();
+      alert('İki Adımlı Doğrulama (2FA) kapatıldı.');
+    } catch (err: any) {
+      setDisable2FAError(err.message || '2FA kapatılamadı.');
+    } finally {
+      setIsSubmittingDisable2FA(false);
+    }
+  };
+
+  const handleResetUser2FA = async (user: AppUser) => {
+    if (!window.confirm(`"${user.username}" kullanıcısının Google Authenticator (2FA) korumasını sıfırlamak istediğinize emin misiniz?\n\nBu işlem, telefonunu kaybeden veya değiştiren personelin sisteme yeniden şifresiyle girebilmesini sağlar.`)) {
+      return;
+    }
+
+    try {
+      await db.resetUser2FA(user.id);
+      loadUsers();
+      if (String(user.id) === String(meUser?.id)) {
+        loadMe();
+      }
+      alert(`"${user.username}" kullanıcısının 2FA doğrulaması sıfırlandı.`);
+    } catch (err: any) {
+      alert(err.message || '2FA sıfırlanamadı.');
+    }
+  };
+
   // --- YENİ KULLANICI EKLEME ---
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,7 +278,8 @@ const Settings = () => {
       await db.createUser({
         username: addUsername.trim(),
         password: addPassword,
-        role: addRole
+        role: addRole,
+        twoFactorEnabled: addTwoFactor
       });
 
       setShowAddModal(false);
@@ -178,6 +287,7 @@ const Settings = () => {
       setAddPassword('');
       setAddPasswordConfirm('');
       setAddRole('user');
+      setAddTwoFactor(false);
       loadUsers();
       alert('Yeni kullanıcı başarıyla eklendi.');
     } catch (err: any) {
@@ -193,6 +303,7 @@ const Settings = () => {
     setEditUsername(user.username);
     setEditPassword('');
     setEditRole(user.role);
+    setEditTwoFactor(!!user.twoFactorEnabled);
     setEditUserError('');
   };
 
@@ -216,11 +327,15 @@ const Settings = () => {
       await db.updateUser(editingUser.id, {
         username: editUsername.trim(),
         password: editPassword || undefined,
-        role: editRole
+        role: editRole,
+        twoFactorEnabled: editTwoFactor
       });
 
       setEditingUser(null);
       loadUsers();
+      if (String(editingUser.id) === String(meUser?.id)) {
+        loadMe();
+      }
       alert('Kullanıcı başarıyla güncellendi.');
     } catch (err: any) {
       setEditUserError(err.message || 'Kullanıcı güncellenemedi.');
@@ -582,7 +697,76 @@ const Settings = () => {
             </form>
           </section>
 
-          {/* B) SİSTEM KULLANICILARI & YENİ KULLANICI EKLEME */}
+          {/* B) GOOGLE AUTHENTICATOR (2FA) İKİ ADIMLI DOĞRULAMA KARTI */}
+          <section className={`border rounded-2xl p-6 shadow-xl transition-all ${
+            meUser?.twoFactorEnabled
+              ? 'bg-emerald-950/20 border-emerald-500/40'
+              : 'bg-slate-900/80 border-slate-800'
+          }`}>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div className="flex items-start gap-3.5">
+                <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                  meUser?.twoFactorEnabled
+                    ? 'bg-emerald-600/20 border border-emerald-500/40 text-emerald-400'
+                    : 'bg-amber-500/10 border border-amber-500/20 text-amber-400'
+                }`}>
+                  {meUser?.twoFactorEnabled ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h3 className="text-base sm:text-lg font-bold text-white">
+                      Google Authenticator (2FA) ile İki Adımlı Doğrulama
+                    </h3>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider ${
+                      meUser?.twoFactorEnabled
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    }`}>
+                      {meUser?.twoFactorEnabled ? 'Aktif' : 'Pasif'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
+                    {meUser?.twoFactorEnabled
+                      ? 'Hesabınız iki adımlı doğrulama ile en üst düzeyde korunmaktadır. Giriş yaparken şifrenize ek olarak telefonunuzdaki Google Authenticator uygulamasından 6 haneli kod istenir.'
+                      : 'Şifreniz çalınsa bile hesabınıza izinsiz girişi %100 engelleyin. Telefonunuza Google Authenticator uygulamasını indirerek bu özelliği tamamen ücretsiz aktif edebilirsiniz.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="shrink-0 w-full sm:w-auto">
+                {meUser?.twoFactorEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDisable2FAError('');
+                      setDisable2FAPassword('');
+                      setShowDisable2FAModal(true);
+                    }}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ShieldOff className="w-4 h-4" />
+                    <span>2FA'yı Devre Dışı Bırak</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={isSubmitting2FA}
+                    onClick={handleStart2FASetup}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-bold shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                  >
+                    {isSubmitting2FA ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <QrCode className="w-4 h-4" />
+                    )}
+                    <span>Google Authenticator'ı Aktif Et</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {/* C) SİSTEM KULLANICILARI & YENİ KULLANICI EKLEME */}
           <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-slate-800">
               <div className="flex items-center gap-3">
@@ -594,7 +778,7 @@ const Settings = () => {
                     Sistem Kullanıcıları ({usersList.length})
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Fatura programına giriş yapabilecek kullanıcıların listesi ve yetkileri.
+                    Fatura programına giriş yapabilecek kullanıcıların listesi, rolleri ve 2FA durumları.
                   </p>
                 </div>
               </div>
@@ -608,9 +792,10 @@ const Settings = () => {
                     setAddPassword('');
                     setAddPasswordConfirm('');
                     setAddRole('user');
+                    setAddTwoFactor(false);
                     setShowAddModal(true);
                   }}
-                  className="bg-purple-600 hover:bg-purple-500 text-white text-xs sm:text-sm font-bold px-4 py-2 rounded-xl shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all shrink-0"
+                  className="bg-purple-600 hover:bg-purple-500 text-white text-xs sm:text-sm font-bold px-4 py-2 rounded-xl shadow-lg shadow-purple-900/30 flex items-center gap-2 transition-all shrink-0 cursor-pointer"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>Yeni Kullanıcı Ekle</span>
@@ -663,14 +848,33 @@ const Settings = () => {
                                 </span>
                               )}
                             </div>
-                            <div className="flex items-center gap-2 text-xs mt-0.5">
+                            <div className="flex items-center gap-2 text-xs mt-1">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
                                 isAdmin
-                                  ? 'bg-emerald-500/20 text-emerald-400'
+                                  ? 'bg-purple-500/20 text-purple-400'
                                   : 'bg-slate-800 text-slate-400'
                               }`}>
-                                {isAdmin ? 'Yönetici (Admin)' : 'Standart Kullanıcı'}
+                                {isAdmin ? 'Yönetici' : 'Kullanıcı'}
                               </span>
+
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${
+                                user.twoFactorEnabled
+                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-slate-800 text-slate-500'
+                              }`}>
+                                {user.twoFactorEnabled ? (
+                                  <>
+                                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                                    2FA Aktif
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShieldOff className="w-3 h-3 text-slate-500" />
+                                    2FA Yok
+                                  </>
+                                )}
+                              </span>
+
                               {user.createdAt && (
                                 <span className="text-[10px] text-slate-500">
                                   {new Date(user.createdAt).toLocaleDateString('tr-TR')}
@@ -683,11 +887,21 @@ const Settings = () => {
                         {/* İşlemler (Sadece Admin veya Düzenleme) */}
                         {currentUser.role === 'admin' && (
                           <div className="flex items-center gap-1.5 shrink-0">
+                            {user.twoFactorEnabled && (
+                              <button
+                                type="button"
+                                onClick={() => handleResetUser2FA(user)}
+                                className="p-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 transition-colors"
+                                title="Google Authenticator (2FA) Sıfırla (Telefonunu kaybeden veya değiştiren personel için)"
+                              >
+                                <ShieldAlert className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => handleOpenEdit(user)}
                               className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                              title="Şifre Sıfırla / Rol Düzenle"
+                              title="Şifre Sıfırla / Rol & 2FA Düzenle"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
@@ -1030,6 +1244,26 @@ const Settings = () => {
                 </select>
               </div>
 
+              <div className="pt-1">
+                <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer bg-slate-950/80 p-3 rounded-xl border border-slate-800 hover:border-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={addTwoFactor}
+                    onChange={(e) => setAddTwoFactor(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded text-purple-600 focus:ring-purple-500 border-slate-700 bg-slate-900 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      Google Authenticator (2FA) Girişte Zorunlu Olsun
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Kullanıcı sisteme giriş yaparken şifresine ek olarak 6 haneli 2FA kodu girmek zorunda olur.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
@@ -1134,6 +1368,26 @@ const Settings = () => {
                 </select>
               </div>
 
+              <div className="pt-1">
+                <label className="flex items-start gap-2.5 text-xs text-slate-300 cursor-pointer bg-slate-950/80 p-3 rounded-xl border border-slate-800 hover:border-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={editTwoFactor}
+                    onChange={(e) => setEditTwoFactor(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded text-blue-600 focus:ring-blue-500 border-slate-700 bg-slate-900 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      Google Authenticator (2FA) Durumu
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      İşaretli ise kullanıcının giriş yaparken 6 haneli kod girmesi zorunludur. İşareti kaldırırsanız 2FA sıfırlanır.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
@@ -1156,6 +1410,229 @@ const Settings = () => {
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       <span>Değişiklikleri Kaydet</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: GOOGLE AUTHENTICATOR (2FA) KURULUM MODALI */}
+      {/* ======================================================== */}
+      {show2FASetupModal && setup2FAData && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-600/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Google Authenticator (2FA) Kurulumu</h3>
+                  <p className="text-xs text-slate-400">Hesabınızı iki adımlı doğrulama ile koruyun</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShow2FASetupModal(false);
+                  setSetup2FAData(null);
+                  setSetup2FACode('');
+                }}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleVerifyAndEnable2FA} className="p-6 space-y-5">
+              {setup2FAError && (
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{setup2FAError}</span>
+                </div>
+              )}
+
+              {/* Adım 1 & 2 Açıklama */}
+              <div className="space-y-2 text-xs text-slate-300 leading-relaxed bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
+                <div className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[11px]">1</span>
+                  <span>Telefonunuza <strong>Google Authenticator</strong> (veya Microsoft Authenticator) uygulamasını indirin.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="w-5 h-5 rounded-full bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shrink-0 text-[11px]">2</span>
+                  <span>Uygulamada <strong>"+"</strong> butonuna basıp <strong>"QR Kodunu Tara"</strong> seçeneğini seçerek aşağıdaki kodu okutun.</span>
+                </div>
+              </div>
+
+              {/* QR Kod Kutusu */}
+              <div className="flex flex-col items-center justify-center p-4 bg-white rounded-2xl shadow-inner max-w-[220px] mx-auto border-4 border-slate-800">
+                <QRCodeSVG
+                  value={setup2FAData.otpauthUrl}
+                  size={190}
+                  level="M"
+                  includeMargin={false}
+                />
+              </div>
+
+              {/* Manuel Giriş Anahtarı */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-400 mb-1 text-center">
+                  QR kodu okutamazsanız bu anahtarı uygulamaya elle girebilirsiniz:
+                </label>
+                <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+                  <input
+                    type="text"
+                    readOnly
+                    value={setup2FAData.secret}
+                    className="w-full bg-transparent text-emerald-400 font-mono text-xs outline-none select-all text-center tracking-wider"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(setup2FAData.secret);
+                      setCopiedSecret(true);
+                      setTimeout(() => setCopiedSecret(false), 2000);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 shrink-0 transition-colors"
+                  >
+                    {copiedSecret ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedSecret ? 'Kopyalandı' : 'Kopyala'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Adım 3: Kodu Girin */}
+              <div className="border-t border-slate-800 pt-4">
+                <label className="block text-xs font-semibold text-slate-200 mb-1.5 text-center">
+                  3. Uygulamada Görünen 6 Haneli Kodu Girin:
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  placeholder="000000"
+                  value={setup2FACode}
+                  onChange={(e) => setSetup2FACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="w-full bg-slate-950 border border-emerald-500/50 rounded-xl py-3 text-center text-2xl font-mono tracking-widest text-emerald-400 outline-none focus:border-emerald-400 transition-colors"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShow2FASetupModal(false);
+                    setSetup2FAData(null);
+                    setSetup2FACode('');
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting2FA || setup2FACode.length !== 6}
+                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-emerald-900/30 flex items-center gap-1.5"
+                >
+                  {isSubmitting2FA ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Doğrulanıyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Doğrula ve Aktif Et</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL: 2FA DEVRE DIŞI BIRAKMA MODALI */}
+      {/* ======================================================== */}
+      {showDisable2FAModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-600/20 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                  <ShieldOff className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">2FA'yı Devre Dışı Bırak</h3>
+                  <p className="text-xs text-slate-400">Güvenlik doğrulaması gereklidir</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDisable2FAModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleDisable2FA} className="p-5 space-y-4">
+              {disable2FAError && (
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{disable2FAError}</span>
+                </div>
+              )}
+
+              <p className="text-xs text-slate-300 leading-relaxed">
+                İki Adımlı Doğrulamayı (Google Authenticator) kapatmak istediğinize emin misiniz? Güvenliğiniz için lütfen mevcut hesap şifrenizi girin.
+              </p>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Mevcut Şifreniz <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  value={disable2FAPassword}
+                  onChange={(e) => setDisable2FAPassword(e.target.value)}
+                  placeholder="Mevcut şifrenizi girin..."
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white text-sm outline-none focus:border-rose-500 transition-colors"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowDisable2FAModal(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white transition-colors"
+                >
+                  Vazgeç
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingDisable2FA || !disable2FAPassword}
+                  className="bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-rose-900/30 flex items-center gap-1.5"
+                >
+                  {isSubmittingDisable2FA ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Kapatılıyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldOff className="w-3.5 h-3.5" />
+                      <span>2FA'yı Devre Dışı Bırak</span>
                     </>
                   )}
                 </button>
