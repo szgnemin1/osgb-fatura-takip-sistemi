@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { db } from '../services/db';
 import { ExpenseCategory, Expense, Transaction } from '../types';
@@ -167,49 +166,76 @@ const Expenses = () => {
         </div>
       </header>
 
-      {/* --- TABLO GÖRÜNÜMÜ (COMPACT MATRIX) --- */}
+      {/* --- TABLO GÖRÜNÜMÜ (COMPACT MATRIX - EKRANA TAM SIĞDIRMA & SIFIR YATAY KAYDIRMA) --- */}
       {activeTab === 'MATRIX' && (
           <div className="flex-1 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col shadow-xl relative min-h-0">
-              <div className="flex-1 overflow-auto custom-scrollbar">
-                  <table className="w-full text-left border-collapse">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
+                  <table className="w-full table-fixed text-left border-collapse">
                       <thead className="bg-slate-900/95 text-[10px] uppercase text-slate-400 font-bold sticky top-0 z-20 shadow-md">
                           <tr>
-                              <th className="p-2 border-b border-r border-slate-800 sticky left-0 bg-slate-900 z-30 w-40 truncate">Gider Kalemi</th>
-                              {['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'].map(m => (
-                                  <th key={m} className="p-2 text-center w-16 border-b border-r border-slate-800">{m}</th>
-                              ))}
-                              <th className="p-2 text-right border-b border-slate-800 sticky right-0 bg-slate-900 z-30 w-24 text-white shadow-[-5px_0_10px_rgba(0,0,0,0.3)]">TOPLAM</th>
+                              <th className="py-2.5 px-2.5 border-b border-r border-slate-800 w-[18%] truncate font-bold text-slate-300">Gider Kalemi</th>
+                              {['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'].map((m, mIdx) => {
+                                  const isCurrent = mIdx === currentMonth - 1 && selectedYear === new Date().getFullYear();
+                                  return (
+                                      <th 
+                                          key={m} 
+                                          className={`py-2 px-0.5 text-center w-[6%] border-b border-r border-slate-800 font-bold truncate transition-colors ${
+                                              isCurrent ? 'bg-blue-600/30 text-blue-300 font-extrabold' : ''
+                                          }`}
+                                          title={m}
+                                      >
+                                          {m}
+                                      </th>
+                                  );
+                              })}
+                              <th className="py-2.5 px-2 text-right border-b border-slate-800 w-[10%] truncate font-bold text-white">TOPLAM</th>
                           </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-700/50">
                           {/* Toplam Satırı - Sticky */}
-                          <tr className="bg-slate-800/90 font-bold sticky top-[33px] z-20 shadow-sm text-xs">
-                              <td className="p-2 text-blue-400 sticky left-0 bg-slate-900 z-20 border-r border-slate-700">TOPLAM</td>
+                          <tr className="bg-slate-800/95 font-bold sticky top-[29px] z-20 shadow-sm text-xs">
+                              <td className="py-2 px-2.5 text-blue-400 border-r border-slate-700 truncate font-extrabold">TOPLAM</td>
                               {Array(12).fill(0).map((_, i) => {
                                   const colTotal = getMatrixData().reduce((sum, r) => sum + r.months[i], 0);
+                                  const isCurrent = i === currentMonth - 1 && selectedYear === new Date().getFullYear();
                                   return (
-                                      <td key={i} className="p-2 text-center text-blue-400 font-mono border-r border-slate-700">
+                                      <td 
+                                          key={i} 
+                                          className={`py-2 px-0.5 text-center text-blue-400 font-mono border-r border-slate-700 truncate text-[11px] tabular-nums tracking-tight ${
+                                              isCurrent ? 'bg-blue-600/20 font-bold' : ''
+                                          }`}
+                                          title={colTotal > 0 ? formatCurrency(colTotal) : ''}
+                                      >
                                           {colTotal > 0 ? formatCurrency(colTotal) : '-'}
                                       </td>
                                   );
                               })}
-                              <td className="p-2 text-right text-rose-500 sticky right-0 bg-slate-900 z-20 border-l border-slate-700 shadow-[-5px_0_10px_rgba(0,0,0,0.3)]">
+                              <td className="py-2 px-2 text-right text-rose-400 font-mono font-black border-l border-slate-700 truncate text-[11px] tabular-nums" title={formatCurrency(totalExpenseYear)}>
                                   {formatCurrency(totalExpenseYear)}
                               </td>
                           </tr>
 
                           {/* Veriler */}
                           {getMatrixData().map((row, idx) => (
-                              <tr key={row.id} className={`group text-xs ${idx % 2 === 0 ? 'bg-slate-800/30' : 'bg-slate-800/10'} hover:bg-slate-700/40`}>
-                                  <td className="p-2 font-medium text-slate-300 border-r border-slate-700/50 sticky left-0 bg-slate-800 group-hover:bg-slate-700 transition-colors z-10 truncate">
+                              <tr key={row.id} className={`group text-xs ${idx % 2 === 0 ? 'bg-slate-800/40' : 'bg-slate-800/10'} hover:bg-slate-700/50 transition-colors`}>
+                                  <td className="py-2 px-2.5 font-medium text-slate-300 border-r border-slate-700/50 truncate group-hover:text-white" title={row.name}>
                                       {row.name}
                                   </td>
-                                  {row.months.map((amount, idx) => (
-                                      <td key={idx} className="p-2 text-center text-slate-400 border-r border-slate-700/30 font-mono group-hover:text-slate-200">
-                                          {amount > 0 ? formatCurrency(amount) : <span className="text-slate-700/30">.</span>}
-                                      </td>
-                                  ))}
-                                  <td className="p-2 font-bold text-right text-slate-200 sticky right-0 bg-slate-800 group-hover:bg-slate-700 transition-colors z-10 border-l border-slate-700/50 shadow-[-5px_0_10px_rgba(0,0,0,0.3)]">
+                                  {row.months.map((amount, mIdx) => {
+                                      const isCurrent = mIdx === currentMonth - 1 && selectedYear === new Date().getFullYear();
+                                      return (
+                                          <td 
+                                              key={mIdx} 
+                                              className={`py-2 px-0.5 text-center font-mono border-r border-slate-700/30 truncate text-[11px] tabular-nums tracking-tight transition-colors ${
+                                                  isCurrent ? 'bg-blue-500/5' : ''
+                                              } ${amount > 0 ? 'text-slate-200 group-hover:text-white font-medium' : 'text-slate-600'}`}
+                                              title={amount > 0 ? formatCurrency(amount) : ''}
+                                          >
+                                              {amount > 0 ? formatCurrency(amount) : <span className="text-slate-600 select-none">-</span>}
+                                          </td>
+                                      );
+                                  })}
+                                  <td className="py-2 px-2 font-bold text-right text-slate-200 border-l border-slate-700/50 font-mono truncate text-[11px] tabular-nums group-hover:text-white" title={formatCurrency(row.total)}>
                                       {formatCurrency(row.total)}
                                   </td>
                               </tr>
