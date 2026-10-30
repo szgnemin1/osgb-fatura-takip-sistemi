@@ -282,15 +282,261 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// Yardımcı: Kullanıcı DB Güvenli Okuma & Yazma
+function readUsers() {
+    if (!fs.existsSync(usersPath)) return [];
+    try {
+        return JSON.parse(fs.readFileSync(usersPath, 'utf-8'));
+    } catch (_) {
+        return [];
+    }
+}
+
+function writeUsers(users) {
+    fs.writeFileSync(usersPath, JSON.stringify(users, null, 2), 'utf-8');
+}
+
 // --- LOGIN ENDPOINT ---
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    if (!fs.existsSync(usersPath)) return res.status(500).json({ error: 'Kullanıcı db yok.' });
-    const users = JSON.parse(fs.readFileSync(usersPath, 'utf-8'));
-    const user = users.find(u => u.username === username);
-    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(400).json({ error: 'Hatalı giriş.' });
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
-    res.json({ token, username: user.username, role: user.role });
+    const users = readUsers();
+    if (!users || users.length === 0) return res.status(500).json({ error: 'Kullanıcı veritabanı bulunamadı.' });
+    const user = users.find(u => u.username.toLowerCase() === (username || '').trim().toLowerCase());
+    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(400).json({ error: 'Hatalı kullanıcı adı veya şifre.' });
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+    res.json({ token, username: user.username, role: user.role || 'user' });
+});
+
+// --- ME (Mevcut Oturum Bilgisi) ---
+app.get('/api/me', authenticateToken, (req, res) => {
+    const users = readUsers();
+    const user = users.find(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+    res.json({ id: user.id, username: user.username, role: user.role || 'user', createdAt: user.createdAt || null });
+});
+
+// --- KULLANICI KENDİ BİLGİLERİNİ GÜNCELLEME (Kullanıcı Adı / Şifre Değiştirme) ---
+app.post('/api/users/change-credentials', authenticateToken, (req, res) => {
+    try {
+        const { currentPassword, newUsername, newPassword } = req.body;
+        if (!currentPassword) {
+            return res.status(400).json({ error: 'Mevcut şifrenizi girmeniz gerekmektedir.' });
+        }
+
+        const users = readUsers();
+        const userIndex = users.findIndex(u => u.id === req.user.id || u.username.toLowerCase() === (req.user.username || '').toLowerCase());
+        if (userIndex === -1) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+        }
+
+        const user = users[userIndex];
+        if (!bcrypt.compareSync(currentPassword, user.password)) {
+            return res.status(400).json({ error: 'Mevcut şifreniz hatalı.' });
+        }
+
+        let usernameChanged = false;
+        if (newUsername && newUsername.trim() && newUsername.trim() !== user.username) {
+            const trimmed = newUsername.trim();
+            if (trimmed.length < 3) {
+                return res.status(400).json({ error: 'Yeni kullanıcı adı en az 3 karakter olmalıdır.' });
+            }
+            const exists = users.some(u => u.id !== user.id && u.username.toLowerCase() === trimmed.toLowerCase());
+            if (exists) {
+                return res.status(400).json({ error: 'Bu kullanıcı adı zaten başka bir hesap tarafından kullanılıyor.' });
+            }
+            user.username = trimmed;
+            usernameChanged = true;
+        }
+
+        let passwordChanged = false;
+        if (newPassword && newPassword.trim()) {
+            const trimmedPass = newPassword.trim();
+            if (trimmedPass.length < 4) {
+                return res.status(400).json({ error: 'Yeni şifre en az 4 karakter olmalıdır.' });
+            }
+            user.password = bcrypt.hashSync(trimmedPass, 10);
+            passwordChanged = true;
+        }
+
+        if (!usernameChanged && !passwordChanged) {
+            return res.status(400).json({ error: 'Herhangi bir değişiklik belirtilmedi.' });
+        }
+
+        user.updatedAt = new Date().toISOString();
+        users[userIndex] = user;
+        writeUsers(users);
+
+        const newToken = jwt.sign({ id: user.id, username: user.username, role: user.role || 'user' }, JWT_SECRET, { expiresIn: '12h' });
+
+        res.json({
+            success: true,
+            message: 'Bilgileriniz başarıyla güncellendi.',
+            token: newToken,
+            username: user.username,
+            role: user.role || 'user'
+        });
+    } catch (e) {
+        console.error('Kullanıcı güncelleme hatası:', e);
+        res.status(500).json({ error: 'Kullanıcı bilgileri güncellenemedi.' });
+    }
+});
+
+// --- KULLANICI LİSTESİ ---
+app.get('/api/users', authenticateToken, (req, res) => {
+    try {
+        const users = readUsers();
+        res.json(users.map(u => ({
+            id: u.id,
+            username: u.username,
+            role: u.role || 'user',
+            createdAt: u.createdAt || null,
+            updatedAt: u.updatedAt || null
+        })));
+    } catch (e) {
+        res.status(500).json({ error: 'Kullanıcı listesi alınamadı.' });
+    }
+});
+
+// --- YENİ KULLANICI EKLEME (Admin) ---
+app.post('/api/users', authenticateToken, (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Yeni kullanıcı ekleme yetkisi sadece yöneticilere aittir.' });
+        }
+
+        const { username, password, role = 'user' } = req.body;
+        if (!username || !username.trim()) {
+            return res.status(400).json({ error: 'Kullanıcı adı gereklidir.' });
+        }
+        const trimmed = username.trim();
+        if (trimmed.length < 3) {
+            return res.status(400).json({ error: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
+        }
+        if (!password || password.trim().length < 4) {
+            return res.status(400).json({ error: 'Şifre en az 4 karakter olmalıdır.' });
+        }
+
+        const users = readUsers();
+        const exists = users.some(u => u.username.toLowerCase() === trimmed.toLowerCase());
+        if (exists) {
+            return res.status(400).json({ error: 'Bu kullanıcı adı zaten mevcut.' });
+        }
+
+        const newUser = {
+            id: Date.now(),
+            username: trimmed,
+            password: bcrypt.hashSync(password.trim(), 10),
+            role: role === 'admin' ? 'admin' : 'user',
+            createdAt: new Date().toISOString()
+        };
+
+        users.push(newUser);
+        writeUsers(users);
+
+        res.json({
+            success: true,
+            message: 'Yeni kullanıcı başarıyla eklendi.',
+            user: {
+                id: newUser.id,
+                username: newUser.username,
+                role: newUser.role,
+                createdAt: newUser.createdAt
+            }
+        });
+    } catch (e) {
+        console.error('Kullanıcı ekleme hatası:', e);
+        res.status(500).json({ error: 'Kullanıcı eklenemedi.' });
+    }
+});
+
+// --- KULLANICI DÜZENLEME / ŞİFRE SIFIRLAMA (Admin) ---
+app.put('/api/users/:id', authenticateToken, (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Kullanıcı düzenleme yetkisi sadece yöneticilere aittir.' });
+        }
+
+        const targetId = req.params.id;
+        const { username, password, role } = req.body;
+        const users = readUsers();
+        const userIndex = users.findIndex(u => String(u.id) === String(targetId));
+        if (userIndex === -1) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+        }
+
+        const user = users[userIndex];
+
+        if (username && username.trim() && username.trim() !== user.username) {
+            const trimmed = username.trim();
+            if (trimmed.length < 3) return res.status(400).json({ error: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
+            const exists = users.some(u => String(u.id) !== String(targetId) && u.username.toLowerCase() === trimmed.toLowerCase());
+            if (exists) return res.status(400).json({ error: 'Bu kullanıcı adı zaten kullanılıyor.' });
+            user.username = trimmed;
+        }
+
+        if (password && password.trim()) {
+            if (password.trim().length < 4) return res.status(400).json({ error: 'Şifre en az 4 karakter olmalıdır.' });
+            user.password = bcrypt.hashSync(password.trim(), 10);
+        }
+
+        if (role) {
+            if (user.role === 'admin' && role !== 'admin') {
+                const adminCount = users.filter(u => u.role === 'admin').length;
+                if (adminCount <= 1) {
+                    return res.status(400).json({ error: 'Sistemdeki tek yönetici yetkisini kaldıramazsınız.' });
+                }
+            }
+            user.role = role === 'admin' ? 'admin' : 'user';
+        }
+
+        user.updatedAt = new Date().toISOString();
+        users[userIndex] = user;
+        writeUsers(users);
+
+        res.json({
+            success: true,
+            message: 'Kullanıcı bilgileri güncellendi.',
+            user: { id: user.id, username: user.username, role: user.role, updatedAt: user.updatedAt }
+        });
+    } catch (e) {
+        console.error('Kullanıcı güncelleme hatası:', e);
+        res.status(500).json({ error: 'Kullanıcı güncellenemedi.' });
+    }
+});
+
+// --- KULLANICI SİLME (Admin) ---
+app.delete('/api/users/:id', authenticateToken, (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Kullanıcı silme yetkisi sadece yöneticilere aittir.' });
+        }
+
+        const targetId = req.params.id;
+        const users = readUsers();
+        const user = users.find(u => String(u.id) === String(targetId));
+        if (!user) {
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+        }
+
+        if (String(req.user.id) === String(user.id) || req.user.username.toLowerCase() === user.username.toLowerCase()) {
+            return res.status(400).json({ error: 'Kendi hesabınızı silemezsiniz.' });
+        }
+
+        if (user.role === 'admin') {
+            const adminCount = users.filter(u => u.role === 'admin').length;
+            if (adminCount <= 1) {
+                return res.status(400).json({ error: 'Sistemdeki tek yöneticiyi silemezsiniz.' });
+            }
+        }
+
+        const remainingUsers = users.filter(u => String(u.id) !== String(targetId));
+        writeUsers(remainingUsers);
+
+        res.json({ success: true, message: 'Kullanıcı başarıyla silindi.' });
+    } catch (e) {
+        console.error('Kullanıcı silme hatası:', e);
+        res.status(500).json({ error: 'Kullanıcı silinemedi.' });
+    }
 });
 
 // Yardımcı: SQLite tablosunu JSON array (stringified) olarak al

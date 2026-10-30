@@ -22,6 +22,8 @@ const Login = ({ onLogin }: { onLogin: (token: string) => void }) => {
             const data = await res.json();
             if (res.ok) {
                 localStorage.setItem('auth_token', data.token);
+                if (data.username) localStorage.setItem('auth_username', data.username);
+                if (data.role) localStorage.setItem('auth_role', data.role);
                 onLogin(data.token);
             } else {
                 setError(data.error || 'Giriş başarısız.');

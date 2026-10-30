@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -29,7 +29,7 @@ const notifyListeners = () => { listeners.forEach(l => l()); };
 
 
 // Ortak Fetch sarmalayıcı (Token yönetimi için)
-const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
+export const fetchWithAuth = async (url: string, options: RequestInit = {}) => {
     const token = localStorage.getItem('auth_token');
     const headers = {
         ...options.headers,
@@ -555,5 +555,69 @@ export const db = {
 
   saveCloudUrl: (url: string) => {
     setStorage(STORAGE_KEYS.CLOUD_CONFIG, url);
+  },
+
+  // --- KULLANICI YÖNETİMİ METOTLARI ---
+  getCurrentUser: (): { username: string; role: 'admin' | 'user' } => {
+    return {
+      username: localStorage.getItem('auth_username') || 'admin',
+      role: (localStorage.getItem('auth_role') as 'admin' | 'user') || 'admin'
+    };
+  },
+
+  getMe: async (): Promise<AppUser> => {
+    const res = await fetchWithAuth('/api/me');
+    return await res.json();
+  },
+
+  changeMyCredentials: async (creds: { currentPassword: string; newUsername?: string; newPassword?: string }) => {
+    const res = await fetchWithAuth('/api/users/change-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(creds)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Bilgiler güncellenemedi.');
+    if (data.token) localStorage.setItem('auth_token', data.token);
+    if (data.username) localStorage.setItem('auth_username', data.username);
+    if (data.role) localStorage.setItem('auth_role', data.role);
+    window.dispatchEvent(new CustomEvent('auth_user_updated', { detail: { username: data.username, role: data.role } }));
+    return data;
+  },
+
+  getUsers: async (): Promise<AppUser[]> => {
+    const res = await fetchWithAuth('/api/users');
+    return await res.json();
+  },
+
+  createUser: async (userData: { username: string; password: string; role: 'admin' | 'user' }): Promise<any> => {
+    const res = await fetchWithAuth('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Kullanıcı eklenemedi.');
+    return data;
+  },
+
+  updateUser: async (id: number | string, userData: { username?: string; password?: string; role?: 'admin' | 'user' }): Promise<any> => {
+    const res = await fetchWithAuth(`/api/users/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Kullanıcı güncellenemedi.');
+    return data;
+  },
+
+  deleteUser: async (id: number | string): Promise<any> => {
+    const res = await fetchWithAuth(`/api/users/${id}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Kullanıcı silinemedi.');
+    return data;
   }
 };

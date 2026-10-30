@@ -1,7 +1,8 @@
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Building2, Calculator, Receipt, FileText, Settings, TrendingDown, LifeBuoy, X, Wallet, LogOut, FileSignature } from 'lucide-react';
+import { db } from '../services/db';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -9,6 +10,19 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
+  const [currentUser, setCurrentUser] = useState(() => db.getCurrentUser());
+
+  useEffect(() => {
+    const handleUserUpdate = (e: any) => {
+      if (e.detail) {
+        setCurrentUser({ username: e.detail.username, role: e.detail.role });
+      } else {
+        setCurrentUser(db.getCurrentUser());
+      }
+    };
+    window.addEventListener('auth_user_updated', handleUserUpdate);
+    return () => window.removeEventListener('auth_user_updated', handleUserUpdate);
+  }, []);
   const navClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm ${
       isActive 
@@ -106,7 +120,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                   window.dispatchEvent(new Event('auth_error'));
                 }
               }} 
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 text-left"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 text-left text-sm"
             >
               <LogOut className="w-5 h-5" />
               <span>Çıkış Yap</span>
@@ -114,7 +128,32 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           </div>
         </nav>
 
-        <div className="p-4 border-t border-slate-800 text-xs text-slate-500 text-center">
+        {/* Kullanıcı Profil Özeti */}
+        <div className="p-3 border-t border-slate-800 bg-slate-950/40">
+          <NavLink 
+            to="/settings"
+            onClick={() => window.innerWidth < 768 && onClose()}
+            className="flex items-center gap-2.5 p-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 hover:bg-slate-800/60 transition-all group"
+            title="Kullanıcı Ayarları ve Profil"
+          >
+            <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 font-bold text-sm shrink-0 group-hover:scale-105 transition-transform">
+              {(currentUser.username || 'A').charAt(0).toUpperCase()}
+            </div>
+            <div className="truncate flex-1 min-w-0">
+              <div className="text-xs font-semibold text-slate-200 truncate">{currentUser.username}</div>
+              <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                {currentUser.role === 'admin' ? (
+                  <span className="text-emerald-400 font-medium">Yönetici</span>
+                ) : (
+                  <span className="text-slate-400">Kullanıcı</span>
+                )}
+              </div>
+            </div>
+            <Settings className="w-4 h-4 text-slate-500 group-hover:text-slate-300 shrink-0" />
+          </NavLink>
+        </div>
+
+        <div className="p-3 border-t border-slate-800 text-[11px] text-slate-500 text-center">
           v2.1.0 • Mobil Uyumlu
         </div>
       </div>

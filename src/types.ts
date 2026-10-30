@@ -148,3 +148,12 @@ export interface Expense {
   month: number;
   year: number;
 }
+
+// --- KULLANICI YÖNETİMİ TİPLERİ ---
+export interface AppUser {
+  id: number | string;
+  username: string;
+  role: 'admin' | 'user';
+  createdAt?: string;
+  updatedAt?: string;
+}

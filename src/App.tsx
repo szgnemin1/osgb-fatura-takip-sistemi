@@ -31,6 +31,8 @@ const App = () => {
 
   const handleLogout = () => {
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_username');
+      localStorage.removeItem('auth_role');
       setIsAuthenticated(false);
   };
 
@@ -40,6 +42,13 @@ const App = () => {
       setError(null);
       try {
           await db.initData();
+          try {
+              const me = await db.getMe();
+              if (me && me.username) {
+                  localStorage.setItem('auth_username', me.username);
+                  if (me.role) localStorage.setItem('auth_role', me.role);
+              }
+          } catch (_) {}
           setIsInitializing(false);
       } catch (e: any) {
           console.error(e);
