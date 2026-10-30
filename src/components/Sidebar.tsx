@@ -106,10 +106,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           </NavLink>
           
           <div className="pt-2 border-t border-slate-800 mt-2 space-y-1">
-            <NavLink to="/support" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
-              <LifeBuoy className="w-5 h-5" />
-              <span>Destek & İletişim</span>
-            </NavLink>
             <NavLink to="/settings" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
               <Settings className="w-5 h-5" />
               <span>Ayarlar & Yedek</span>
@@ -153,8 +149,20 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           </NavLink>
         </div>
 
-        <div className="p-3 border-t border-slate-800 text-[11px] text-slate-500 text-center">
-          v2.1.0 • Mobil Uyumlu
+        <div className="p-2.5 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 bg-slate-950/60">
+          <span className="text-[11px] text-slate-500 font-mono">v2.2.0</span>
+          <button 
+            type="button"
+            onClick={() => {
+              window.dispatchEvent(new Event('open_support'));
+              if (window.innerWidth < 768) onClose();
+            }}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-slate-400 hover:text-blue-400 hover:bg-slate-800/80 transition-colors cursor-pointer"
+            title="Destek & İletişim"
+          >
+            <LifeBuoy className="w-4 h-4 text-blue-400" />
+            <span className="font-medium text-[11px]">Destek & İletişim</span>
+          </button>
         </div>
       </div>
     </>

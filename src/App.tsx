@@ -9,13 +9,13 @@ import Invoices from './pages/Invoices';
 import FirmDetails from './pages/FirmDetails';
 import Settings from './pages/Settings';
 import DebtTracking from './pages/DebtTracking';
-import Support from './pages/Support';
 import Expenses from './pages/Expenses'; // Yeni Sayfa
 import Quotes from './pages/Quotes';
 import CuttingPortal from './pages/CuttingPortal';
 import { db } from './services/db';
-import { Loader2, Menu, RefreshCw, AlertCircle } from 'lucide-react';
+import { Loader2, Menu, RefreshCw, AlertCircle, LifeBuoy } from 'lucide-react';
 import io from 'socket.io-client';
+import { SupportModal } from './components/SupportModal';
 
 import Login from './pages/Login';
 
@@ -24,6 +24,7 @@ const App = () => {
   const [isInitializing, setIsInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
 
   const handleLogin = (token: string) => {
       setIsAuthenticated(true);
@@ -87,9 +88,13 @@ const App = () => {
         const handleAuthError = () => handleLogout();
         window.addEventListener('auth_error', handleAuthError);
 
+        const handleOpenSupport = () => setIsSupportOpen(true);
+        window.addEventListener('open_support', handleOpenSupport);
+
         return () => {
             socket.disconnect();
             window.removeEventListener('auth_error', handleAuthError);
+            window.removeEventListener('open_support', handleOpenSupport);
         };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -163,6 +168,14 @@ const App = () => {
                    <span className="text-blue-500">OSGB</span> PRO
                 </span>
              </div>
+             <button 
+               onClick={() => setIsSupportOpen(true)}
+               className="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg border border-slate-700 transition-colors"
+               title="Destek & İletişim"
+             >
+                <LifeBuoy className="w-4 h-4 text-blue-400" />
+                <span>Destek</span>
+             </button>
           </div>
 
           <div className="flex-1 overflow-auto p-4 md:p-8">
@@ -177,7 +190,7 @@ const App = () => {
                 <Route path="/details" element={<FirmDetails />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/debt-tracking" element={<DebtTracking />} />
-                <Route path="/support" element={<Support />} />
+                <Route path="/support" element={<Navigate to="/" replace />} />
                 <Route path="/quotes" element={<Quotes />} />
                 <Route path="/kesim" element={<CuttingPortal />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
@@ -185,6 +198,21 @@ const App = () => {
             </div>
           </div>
         </main>
+
+        {/* Floating Destek & İletişim Butonu */}
+        <button
+          type="button"
+          onClick={() => setIsSupportOpen(true)}
+          className="fixed bottom-5 right-5 z-40 bg-slate-900/95 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 hover:border-blue-500/50 shadow-2xl px-3.5 py-2 rounded-full flex items-center gap-2 text-xs font-semibold backdrop-blur-md transition-all hover:scale-105 active:scale-95 group cursor-pointer"
+          title="Destek ve İletişim"
+        >
+          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <LifeBuoy className="w-4 h-4 text-blue-400 group-hover:rotate-45 transition-transform" />
+          <span className="hidden sm:inline">Destek & İletişim</span>
+        </button>
+
+        {/* Destek & İletişim Popup Modalı */}
+        <SupportModal isOpen={isSupportOpen} onClose={() => setIsSupportOpen(false)} />
       </div>
     </Router>
   );
