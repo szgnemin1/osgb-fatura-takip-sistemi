@@ -4,7 +4,7 @@ import { ExpenseCategory, Expense, Transaction } from '../types';
 import { 
   Wallet, Plus, Trash2, PieChart as PieIcon, List, 
   CalendarDays, TrendingUp, CreditCard, 
-  ChevronLeft, ChevronRight, X, Tag
+  ChevronLeft, ChevronRight, X, Tag, Scale, BarChart3
 } from 'lucide-react';
 import { 
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, 
@@ -102,16 +102,21 @@ const Expenses = () => {
   const getBarData = () => {
       const result = [];
       const currentExpenses = expenses.filter(e => e.year === selectedYear);
-      const currentIncomes = transactions.filter(t => t.year === selectedYear && t.type === 'TAHSİLAT' && (t.status === 'APPROVED' || !t.status));
+      const currentIncomes = transactions.filter(t => t.year === selectedYear && (t.type === 'TAHSİLAT' || t.type === 'PAYMENT') && (t.status === 'APPROVED' || !t.status));
 
       for(let i=0; i<12; i++) {
           const expense = currentExpenses.filter(e => e.month === i + 1).reduce((sum, e) => sum + e.amount, 0);
-          const income = currentIncomes.filter(t => t.month === i + 1).reduce((sum, t) => sum + t.credit, 0);
+          const income = currentIncomes.filter(t => t.month === i + 1).reduce((sum, t) => sum + (t.credit || 0), 0);
+          const shortName = new Date(2000, i, 1).toLocaleString('tr-TR', { month: 'short' });
+          const fullName = new Date(2000, i, 1).toLocaleString('tr-TR', { month: 'long' });
           result.push({
-              name: new Date(0, i).toLocaleString('tr-TR', { month: 'short' }),
+              monthNum: i + 1,
+              name: shortName,
+              fullName: fullName,
               Gelir: income,
               Gider: expense,
-              Net: income - expense
+              Net: income - expense,
+              ratio: income > 0 ? Math.round((expense / income) * 100) : 0
           });
       }
       return result;
@@ -122,6 +127,13 @@ const Expenses = () => {
   const maxExpenseItem = getMatrixData().length > 0 ? getMatrixData()[0] : null;
   const currentMonth = new Date().getMonth() + 1;
   const thisMonthExpense = expenses.filter(e => e.year === selectedYear && e.month === currentMonth).reduce((sum, e) => sum + e.amount, 0);
+
+  // Analiz İstatistikleri
+  const currentIncomesYear = transactions.filter(t => t.year === selectedYear && (t.type === 'TAHSİLAT' || t.type === 'PAYMENT') && (t.status === 'APPROVED' || !t.status));
+  const totalIncomeYear = currentIncomesYear.reduce((sum, t) => sum + (t.credit || 0), 0);
+  const netProfitYear = totalIncomeYear - totalExpenseYear;
+  const expenseRatioYear = totalIncomeYear > 0 ? Math.round((totalExpenseYear / totalIncomeYear) * 100) : 0;
+  const monthlyData = getBarData();
 
   return (
     <div className="flex flex-col h-[calc(100vh-1rem)] space-y-4 animate-in fade-in duration-500 overflow-hidden">
@@ -323,40 +335,78 @@ const Expenses = () => {
           </div>
       )}
 
-      {/* --- RAPORLAR (REPORT) --- */}
+      {/* --- RAPORLAR & ANALİZ (REPORT) --- */}
       {activeTab === 'REPORT' && (
-          <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto pr-2 custom-scrollbar">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow relative overflow-hidden">
-                      <p className="text-xs text-slate-400 uppercase font-bold mb-1">Yıllık Gider</p>
-                      <p className="text-2xl font-bold text-rose-400">{formatCurrency(totalExpenseYear)}</p>
-                      <Wallet className="absolute bottom-2 right-2 w-12 h-12 text-slate-700 opacity-20"/>
+          <div className="flex flex-col gap-5 flex-1 min-h-0 overflow-y-auto pr-2 custom-scrollbar pb-6">
+              
+              {/* 1. ÜST FİNANSAL GÖSTERGE KARTLARI (4'LÜ DÜZEN) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Kart 1: Yıllık Gelir (Tahsilat) */}
+                  <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-md relative overflow-hidden group hover:border-slate-600 transition-colors">
+                      <p className="text-[11px] text-slate-400 uppercase font-bold tracking-wider mb-1">Yıllık Tahsilat (Gelir)</p>
+                      <p className="text-2xl font-black font-mono text-emerald-400">{formatCurrency(totalIncomeYear)}</p>
+                      <p className="text-[11px] text-slate-500 mt-1">{selectedYear} Toplam Gelir</p>
+                      <TrendingUp className="absolute bottom-2 right-2 w-12 h-12 text-emerald-500/10 pointer-events-none group-hover:text-emerald-500/20 transition-colors"/>
                   </div>
-                  <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow relative overflow-hidden">
-                      <p className="text-xs text-slate-400 uppercase font-bold mb-1">En Yüksek</p>
-                      <p className="text-xl font-bold text-white truncate">{maxExpenseItem ? maxExpenseItem.name : '-'}</p>
-                      <p className="text-xs text-slate-500">{maxExpenseItem ? formatCurrency(maxExpenseItem.total) : ''}</p>
+
+                  {/* Kart 2: Yıllık Gider */}
+                  <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-md relative overflow-hidden group hover:border-slate-600 transition-colors">
+                      <p className="text-[11px] text-slate-400 uppercase font-bold tracking-wider mb-1">Yıllık Toplam Gider</p>
+                      <p className="text-2xl font-black font-mono text-rose-400">{formatCurrency(totalExpenseYear)}</p>
+                      <p className="text-[11px] text-slate-500 mt-1">{selectedYear} Toplam Harcama</p>
+                      <Wallet className="absolute bottom-2 right-2 w-12 h-12 text-rose-500/10 pointer-events-none group-hover:text-rose-500/20 transition-colors"/>
                   </div>
-                  <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow relative overflow-hidden">
-                      <p className="text-xs text-slate-400 uppercase font-bold mb-1">Bu Ay</p>
-                      <p className="text-2xl font-bold text-blue-400">{formatCurrency(thisMonthExpense)}</p>
+
+                  {/* Kart 3: Net Bakiye (Kâr/Zarar) */}
+                  <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-md relative overflow-hidden group hover:border-slate-600 transition-colors">
+                      <div className="flex items-center justify-between mb-1">
+                          <p className="text-[11px] text-slate-400 uppercase font-bold tracking-wider">Net Bilanço</p>
+                          {totalIncomeYear > 0 && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300 font-mono">
+                                  Gider %{expenseRatioYear}
+                              </span>
+                          )}
+                      </div>
+                      <p className={`text-2xl font-black font-mono ${netProfitYear >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {formatCurrency(netProfitYear)}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                          {netProfitYear >= 0 ? 'Net Kâr Durumu' : 'Net Bütçe Açığı'}
+                      </p>
+                      <Scale className="absolute bottom-2 right-2 w-12 h-12 text-slate-500/10 pointer-events-none group-hover:text-slate-500/20 transition-colors"/>
+                  </div>
+
+                  {/* Kart 4: Bu Ay & En Yüksek */}
+                  <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-md relative overflow-hidden group hover:border-slate-600 transition-colors">
+                      <p className="text-[11px] text-slate-400 uppercase font-bold tracking-wider mb-1">Bu Ayki Gider</p>
+                      <p className="text-2xl font-black font-mono text-blue-400">{formatCurrency(thisMonthExpense)}</p>
+                      <p className="text-[11px] text-slate-400 mt-1 truncate" title={maxExpenseItem ? `${maxExpenseItem.name}: ${formatCurrency(maxExpenseItem.total)}` : ''}>
+                          En Yüksek: <span className="font-semibold text-slate-200">{maxExpenseItem ? maxExpenseItem.name : '-'}</span>
+                      </p>
+                      <CalendarDays className="absolute bottom-2 right-2 w-12 h-12 text-blue-500/10 pointer-events-none group-hover:text-blue-500/20 transition-colors"/>
                   </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
+              {/* 2. GRAFİKLER (GELİR/GİDER ALAN GRAFİĞİ + DONUT DAĞILIM) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Gelir & Gider Grafiği */}
                   <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 shadow-lg flex flex-col h-[360px]">
-                      <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2">
-                          <TrendingUp className="w-4 h-4 text-emerald-500"/> Gelir & Gider Trendi ({selectedYear})
-                      </h3>
+                      <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                              <TrendingUp className="w-4 h-4 text-emerald-400"/> Gelir & Gider Nakit Akışı ({selectedYear})
+                          </h3>
+                          <span className="text-xs text-slate-400 font-mono">
+                              Aylık Karşılaştırma
+                          </span>
+                      </div>
                       <div className="flex-1 w-full min-h-0">
                           <ResponsiveContainer width="100%" height="100%">
-                              <AreaChart data={getBarData()} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                              <AreaChart data={monthlyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                   <defs>
-                                      <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient>
-                                      <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient>
+                                      <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.35}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient>
+                                      <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.35}/><stop offset="95%" stopColor="#ef4444" stopOpacity={0}/></linearGradient>
                                   </defs>
-                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.5} vertical={false} />
                                   <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
                                   <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(val) => `${val/1000}k`} />
                                   <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#fff', fontSize: '12px' }} formatter={(val:number) => formatCurrency(val)} />
@@ -452,6 +502,107 @@ const Expenses = () => {
                       )}
                   </div>
               </div>
+
+              {/* 3. AYLIK FİNANSAL NETİCE TABLOSU (P&L BREAKDOWN) */}
+              <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+                  <div className="p-3.5 bg-slate-900/80 border-b border-slate-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                          <BarChart3 className="w-4 h-4 text-blue-400" />
+                          {selectedYear} Aylık Finansal Bilanço Özeti
+                      </h4>
+                      <span className="text-xs font-mono font-bold text-slate-300">
+                          Net Yıllık Fark: <span className={netProfitYear >= 0 ? 'text-emerald-400' : 'text-rose-400'}>{formatCurrency(netProfitYear)}</span>
+                      </span>
+                  </div>
+                  <div className="overflow-x-auto custom-scrollbar">
+                      <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                              <tr className="bg-slate-900/90 text-[10px] uppercase tracking-wider text-slate-400 font-bold border-b border-slate-700">
+                                  <th className="p-2.5">Ay</th>
+                                  <th className="p-2.5 text-right">Tahsil Edilen Gelir</th>
+                                  <th className="p-2.5 text-right">Yapılan Gider</th>
+                                  <th className="p-2.5 text-right">Net Fark (Kâr/Zarar)</th>
+                                  <th className="p-2.5 text-center">Gider / Gelir Oranı</th>
+                                  <th className="p-2.5 text-center">Mali Durum</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-700/50 font-mono">
+                              {monthlyData.map((row, idx) => {
+                                  const hasActivity = row.Gelir > 0 || row.Gider > 0;
+                                  const isProfit = row.Net >= 0;
+                                  const isCurrent = row.monthNum === currentMonth && selectedYear === new Date().getFullYear();
+                                  return (
+                                      <tr key={row.monthNum} className={`hover:bg-slate-700/40 transition-colors ${idx % 2 === 0 ? 'bg-slate-800/30' : 'bg-slate-800/10'} ${isCurrent ? 'bg-blue-900/15' : ''}`}>
+                                          <td className="p-2.5 font-sans font-medium text-slate-200 flex items-center gap-1.5">
+                                              {isCurrent && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
+                                              <span>{row.fullName}</span>
+                                          </td>
+                                          <td className="p-2.5 text-right font-bold text-emerald-400">
+                                              {row.Gelir > 0 ? formatCurrency(row.Gelir) : <span className="text-slate-600">-</span>}
+                                          </td>
+                                          <td className="p-2.5 text-right font-bold text-rose-400">
+                                              {row.Gider > 0 ? formatCurrency(row.Gider) : <span className="text-slate-600">-</span>}
+                                          </td>
+                                          <td className={`p-2.5 text-right font-bold ${row.Net > 0 ? 'text-emerald-400' : row.Net < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                                              {row.Net !== 0 ? formatCurrency(row.Net) : <span className="text-slate-600">-</span>}
+                                          </td>
+                                          <td className="p-2.5 text-center font-sans">
+                                              {row.Gelir > 0 ? (
+                                                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                                      row.ratio <= 50 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                                      row.ratio <= 85 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                                      'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                                  }`}>
+                                                      %{row.ratio}
+                                                  </span>
+                                              ) : (
+                                                  <span className="text-slate-600">-</span>
+                                              )}
+                                          </td>
+                                          <td className="p-2.5 text-center font-sans">
+                                              {!hasActivity ? (
+                                                  <span className="text-slate-600 text-[10px]">-</span>
+                                              ) : isProfit ? (
+                                                  <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40">Kârda</span>
+                                              ) : (
+                                                  <span className="text-[10px] font-semibold text-rose-400 bg-rose-950/40 px-2 py-0.5 rounded border border-rose-800/40">Açık</span>
+                                              )}
+                                          </td>
+                                      </tr>
+                                  );
+                              })}
+                          </tbody>
+                          {/* Toplam Satırı */}
+                          <tfoot className="bg-slate-900/90 font-bold border-t-2 border-slate-700 text-xs font-mono">
+                              <tr>
+                                  <td className="p-2.5 font-sans font-bold text-white">YILLIK TOPLAM</td>
+                                  <td className="p-2.5 text-right text-emerald-400">{formatCurrency(totalIncomeYear)}</td>
+                                  <td className="p-2.5 text-right text-rose-400">{formatCurrency(totalExpenseYear)}</td>
+                                  <td className={`p-2.5 text-right font-black ${netProfitYear >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {formatCurrency(netProfitYear)}
+                                  </td>
+                                  <td className="p-2.5 text-center font-sans">
+                                      {totalIncomeYear > 0 ? (
+                                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                                              %{expenseRatioYear}
+                                          </span>
+                                      ) : '-'}
+                                  </td>
+                                  <td className="p-2.5 text-center font-sans">
+                                      <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded ${
+                                          netProfitYear >= 0 
+                                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' 
+                                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                      }`}>
+                                          {netProfitYear >= 0 ? 'NET KÂR' : 'NET ZARAR'}
+                                      </span>
+                                  </td>
+                              </tr>
+                          </tfoot>
+                      </table>
+                  </div>
+              </div>
+
           </div>
       )}
     </div>
