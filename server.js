@@ -445,12 +445,18 @@ const requireAdmin = (req, res, next) => {
     next();
 };
 
+// İstemci Gerçek IP Adresi (Cloudflare Tunnel CF-Connecting-IP Desteğiyle)
+function getClientIp(req) {
+    if (!req) return '127.0.0.1';
+    return req.headers['cf-connecting-ip'] || req.ip || req.connection?.remoteAddress || req.headers['x-forwarded-for'] || '127.0.0.1';
+}
+
 // Güvenlik & İşlem Denetim Kaydı (Audit Logging)
 async function logAuditEvent(req, action, details, status = 'SUCCESS', usernameOverride = null) {
     try {
         if (!db) return;
         const id = 'aud_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-        const ipAddr = req ? (req.ip || req.connection?.remoteAddress || req.headers['x-forwarded-for'] || '127.0.0.1') : 'SYSTEM';
+        const ipAddr = req ? getClientIp(req) : 'SYSTEM';
         const username = usernameOverride || req?.user?.username || 'ANONYMOUS';
         const timestamp = new Date().toISOString();
         const detailsStr = typeof details === 'object' ? JSON.stringify(details) : String(details || '');
@@ -557,7 +563,7 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 dakika kilit
 const loginAttempts = new Map();
 
 function getAttemptKey(req, username) {
-    const ipAddr = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || 'client';
+    const ipAddr = getClientIp(req);
     const cleanUser = String(username || '').trim().toLowerCase();
     return `${ipAddr}:::${cleanUser}`;
 }
@@ -1621,7 +1627,7 @@ app.post('/api/batches/cancel', authenticateToken, async (req, res) => {
 // 5.4 Terminal Ekranı: Operatör Koduna Göre Fatura Listesini Getir (PIN Brute-Force Korumalı)
 app.get('/api/batches/terminal/:code', async (req, res) => {
     try {
-        const clientIp = req.ip || req.connection?.remoteAddress || 'client';
+        const clientIp = getClientIp(req);
         const termLock = checkTerminalLockout(clientIp);
         if (termLock.isLocked) {
             await logAuditEvent(req, 'TERMINAL_LOCKOUT', { ip: clientIp, remainingMinutes: termLock.remainingMinutes }, 'LOCKED');
