@@ -408,6 +408,28 @@ async function createDatabaseBackup() {
         name TEXT NOT NULL,
         created_at TEXT NOT NULL
     );`);
+    await db.run(`CREATE TABLE IF NOT EXISTS reconciliations (
+        id TEXT PRIMARY KEY,
+        firm_id TEXT NOT NULL,
+        period TEXT NOT NULL,
+        balance REAL NOT NULL,
+        total_billed REAL DEFAULT 0,
+        total_paid REAL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'PENDING_SEND',
+        phone TEXT,
+        token TEXT UNIQUE NOT NULL,
+        sent_at TEXT,
+        response_at TEXT,
+        response_status TEXT,
+        response_balance REAL,
+        response_note TEXT,
+        client_ip TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT
+    );`);
+    await db.run('CREATE INDEX IF NOT EXISTS idx_rec_period ON reconciliations(period);');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_rec_token ON reconciliations(token);');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_rec_firm ON reconciliations(firm_id);');
     console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu & Güvenlik Denetim Tablosu Aktif).");
 
     // users.json içindeki 2FA gizli anahtarlarını AES-256-GCM ile şifrele (Migration)
@@ -449,6 +471,9 @@ async function createDatabaseBackup() {
     } catch (err) {
         console.error('[Telegram Bot] Başlangıç hatası:', err);
     }
+
+    // WhatsApp Servisini Arka Planda Başlat (Kayıtlı oturum varsa otomatik bağlanır)
+    initWhatsApp().catch(err => console.error('[WhatsApp] Başlatma hatası:', err));
 })();
 
 // JWT Middleware
@@ -2955,6 +2980,906 @@ app.delete('/api/telegram/users/:id', authenticateToken, requireAdmin, async (re
         res.json({ success: true, message: 'Yetkili başarıyla silindi.' });
     } catch (e) {
         res.status(500).json({ error: 'Yetkili silinemedi: ' + e.message });
+    }
+});
+
+// =========================================================================
+// WHATSAPP (BAILEYS) VE DİNAMİK CARİ MUTABAKAT SERVİSİ
+// =========================================================================
+
+let waSocket = null;
+let waQrCode = null;
+let isWaConnected = false;
+let waUserPhone = null;
+let isWaInitializing = false;
+
+const waAuthDir = path.join(dbDir, 'whatsapp_auth');
+if (!fs.existsSync(waAuthDir)) fs.mkdirSync(waAuthDir, { recursive: true });
+
+async function initWhatsApp() {
+    if (isWaInitializing) return;
+    isWaInitializing = true;
+    try {
+        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+        const pino = require('pino');
+
+        const { state, saveCreds } = await useMultiFileAuthState(waAuthDir);
+
+        waSocket = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: ['OSGB ProFinans', 'Chrome', '1.0.0']
+        });
+
+        waSocket.ev.on('creds.update', saveCreds);
+
+        waSocket.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            if (qr) {
+                waQrCode = qr;
+                isWaConnected = false;
+                io.emit('wa_status', { isConnected: false, qrCode: qr });
+            }
+            if (connection === 'close') {
+                isWaConnected = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                console.log('[WhatsApp] Bağlantı kapandı, kod:', statusCode, 'Yeniden bağlanma:', shouldReconnect);
+                if (shouldReconnect) {
+                    setTimeout(() => initWhatsApp(), 5000);
+                } else {
+                    waQrCode = null;
+                    waUserPhone = null;
+                    try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
+                    io.emit('wa_status', { isConnected: false, qrCode: null });
+                }
+            } else if (connection === 'open') {
+                isWaConnected = true;
+                waQrCode = null;
+                waUserPhone = waSocket.user?.id ? waSocket.user.id.split(':')[0] : null;
+                console.log(`[WhatsApp] Başarıyla bağlandı! Numara: ${waUserPhone}`);
+                io.emit('wa_status', { isConnected: true, qrCode: null, phoneNumber: waUserPhone });
+            }
+        });
+    } catch (e) {
+        console.error('[WhatsApp] Başlatma hatası:', e);
+        isWaConnected = false;
+    } finally {
+        isWaInitializing = false;
+    }
+}
+
+function formatPhoneForWhatsApp(phone) {
+    if (!phone) return null;
+    let clean = String(phone).replace(/[^0-9]/g, '');
+    if (clean.startsWith('0')) clean = '9' + clean;
+    else if (!clean.startsWith('90') && clean.length === 10) clean = '90' + clean;
+    if (clean.length === 12 && clean.startsWith('90')) return clean;
+    return clean.length >= 10 ? clean : null;
+}
+
+// Resmi Mutabakat Mektubu PDF Üretici
+function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid, transactions) {
+    const doc = new jsPDF();
+
+    // Resmi Başlık
+    doc.setFontSize(16);
+    doc.setTextColor(30, 64, 175);
+    doc.text("CARI HESAP MUTABAKAT MEKTUBU", 105, 18, { align: "center" });
+
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text("T.C. KANUNLARI VE VERGI USUL KANUNU GEREGI DONEMSEL HESAP MUTABAKATI", 105, 24, { align: "center" });
+
+    doc.setDrawColor(203, 213, 225);
+    doc.line(14, 28, 196, 28);
+
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 41, 59);
+    doc.setFont("helvetica", "bold");
+    doc.text("Sayin Yetkili,", 14, 36);
+    doc.text(replaceTR(firm.name || 'Firma'), 14, 42);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`Tarih: ${new Date().toLocaleDateString('tr-TR')}`, 196, 36, { align: 'right' });
+    doc.text(`Donem: ${replaceTR(period)}`, 196, 42, { align: 'right' });
+
+    const balanceNum = Number(balance) || 0;
+    let bakiyeMetni = "0.00 TL ile HESABIMIZ DENK";
+    if (balanceNum > 0) {
+        bakiyeMetni = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL SIRKETIMIZE BORCLU`;
+    } else if (balanceNum < 0) {
+        bakiyeMetni = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL SIRKETIMIZDEN ALACAKLI`;
+    }
+
+    doc.setFontSize(9);
+    doc.setTextColor(51, 65, 85);
+    const introText = 
+        `Sirketimiz nezdindeki cari hesap kayitlarimiza gore, yukarida belirtilen donem sonu itibariyle ` +
+        `firmanizin hesabinda ${bakiyeMetni} bakiye bulunmaktadir.\n\n` +
+        `Kayitlarinizin tetkik edilerek tarafimiza mutabakat durumunuzun bildirilmesini rica ederiz. ` +
+        `Hesap ekstreniz asagida ozetlenmistir:`;
+
+    const splitIntro = doc.splitTextToSize(introText, 182);
+    doc.text(splitIntro, 14, 50);
+
+    const afterIntroY = 50 + (splitIntro.length * 4.5);
+
+    // Finansal Kutu
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(14, afterIntroY, 182, 17, 2, 2, 'FD');
+    doc.setFontSize(8.5);
+    doc.setFont("helvetica", "bold");
+    doc.text("Toplam Fatura (Borc):", 20, afterIntroY + 6.5);
+    doc.text("Toplam Odenen (Alacak):", 80, afterIntroY + 6.5);
+    doc.text("MUTABAKAT BAKIYESI:", 135, afterIntroY + 6.5);
+
+    doc.setFont("helvetica", "normal");
+    doc.text(`${(totalBilled || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 20, afterIntroY + 12.5);
+    doc.text(`${(totalPaid || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 80, afterIntroY + 12.5);
+
+    doc.setFont("helvetica", "bold");
+    if (balanceNum > 0) {
+        doc.setTextColor(220, 38, 38);
+        doc.text(`${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 135, afterIntroY + 12.5);
+    } else if (balanceNum < 0) {
+        doc.setTextColor(16, 185, 129);
+        doc.text(`${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 135, afterIntroY + 12.5);
+    } else {
+        doc.setTextColor(71, 85, 105);
+        doc.text("0.00 TL (Denk)", 135, afterIntroY + 12.5);
+    }
+
+    doc.setTextColor(0, 0, 0);
+
+    const reportTrans = (transactions || []).filter(t => {
+        if (t.type === 'ÇEK' || t.type === 'CHEQUE') return t.chequeStatus === 'COLLECTED';
+        return t.status === 'APPROVED' || !t.status;
+    });
+    reportTrans.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    const monthNames = ['Ocak', 'Subat', 'Mart', 'Nisan', 'Mayis', 'Haziran', 'Temmuz', 'Agustos', 'Eylul', 'Ekim', 'Kasim', 'Aralik'];
+    const rows = reportTrans.map(t => {
+        const d = new Date(t.date);
+        const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('tr-TR') : t.date;
+        const periodStr = t.month ? `${monthNames[t.month - 1] || t.month} ${t.year || ''}` : '-';
+        return [
+            replaceTR(periodStr),
+            dateStr,
+            replaceTR(t.description || '-'),
+            t.debt > 0 ? `${Number(t.debt).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : '-',
+            t.credit > 0 ? `${Number(t.credit).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : '-'
+        ];
+    });
+
+    const startTableY = afterIntroY + 22;
+
+    doc.autoTable({
+        startY: startTableY,
+        head: [['Donem', 'Islem Tarihi', 'Aciklama', 'Borc (Fatura)', 'Alacak (Odeme)']],
+        body: rows.length > 0 ? rows : [['-', '-', 'Bu donemde kayitli hareket bulunmamaktadir.', '-', '-']],
+        styles: { font: 'helvetica', fontSize: 8, cellPadding: 3 },
+        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: {
+            0: { cellWidth: 26 },
+            1: { cellWidth: 24 },
+            2: { cellWidth: 'auto' },
+            3: { cellWidth: 30, halign: 'right' },
+            4: { cellWidth: 30, halign: 'right' }
+        },
+        theme: 'grid',
+        margin: { top: 10, left: 14, right: 14 }
+    });
+
+    const finalY = doc.lastAutoTable?.finalY || startTableY + 40;
+    const boxY = Math.min(finalY + 8, 248);
+
+    doc.setDrawColor(203, 213, 225);
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, boxY, 82, 30, 2, 2, 'D');
+    doc.roundedRect(114, boxY, 82, 30, 2, 2, 'D');
+
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(71, 85, 105);
+    doc.text("DUZENLEYEN (OSGB)", 55, boxY + 6, { align: "center" });
+    doc.text("KONTROL EDEN & ONAYLAYAN (MUSTERI)", 155, boxY + 6, { align: "center" });
+
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "normal");
+    doc.text("Kase / Yetkili Imza", 55, boxY + 26, { align: "center" });
+    doc.text("Mutabikiz [  ]       Mutabik Degiliz [  ]", 155, boxY + 26, { align: "center" });
+
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text(`OSGB ProFinans - Resmi Cari Mutabakat Formu - Sayfa ${i} / ${pageCount}`, doc.internal.pageSize.width / 2, doc.internal.pageSize.height - 5, { align: 'center' });
+    }
+
+    return Buffer.from(doc.output('arraybuffer'));
+}
+
+// WhatsApp Durum API
+app.get('/api/whatsapp/status', authenticateToken, (req, res) => {
+    res.json({
+        isConnected: isWaConnected,
+        qrCode: waQrCode,
+        phoneNumber: waUserPhone
+    });
+});
+
+// WhatsApp Bağlantısını Yeniden Başlat (QR Üret)
+app.post('/api/whatsapp/restart', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (waSocket) {
+            try { waSocket.end(); } catch (_) {}
+            waSocket = null;
+        }
+        waQrCode = null;
+        isWaConnected = false;
+        await initWhatsApp();
+        res.json({ success: true, message: 'WhatsApp servisi başlatıldı.' });
+    } catch (e) {
+        res.status(500).json({ error: 'WhatsApp başlatılamadı: ' + e.message });
+    }
+});
+
+// WhatsApp Bağlantısını Kes
+app.post('/api/whatsapp/disconnect', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (waSocket) {
+            try { await waSocket.logout(); } catch (_) {}
+            try { waSocket.end(); } catch (_) {}
+            waSocket = null;
+        }
+        isWaConnected = false;
+        waQrCode = null;
+        waUserPhone = null;
+        try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
+        res.json({ success: true, message: 'WhatsApp bağlantısı kesildi.' });
+    } catch (e) {
+        res.status(500).json({ error: 'Bağlantı kesilemedi: ' + e.message });
+    }
+});
+
+// Mutabakat Verilerini Getir
+app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const period = req.query.period || '2026-Q3';
+
+        const rows = await db.all(
+            `SELECT r.*, f.data as firm_data 
+             FROM reconciliations r 
+             LEFT JOIN firms f ON r.firm_id = f.id 
+             WHERE r.period = ? 
+             ORDER BY r.firm_id ASC`,
+            [period]
+        );
+
+        const items = rows.map(r => {
+            let firmName = 'Bilinmeyen Firma';
+            try {
+                if (r.firm_data) {
+                    const parsed = JSON.parse(r.firm_data);
+                    firmName = parsed.name || firmName;
+                }
+            } catch (_) {}
+
+            return {
+                id: r.id,
+                firm_id: r.firm_id,
+                firm_name: firmName,
+                period: r.period,
+                balance: r.balance,
+                total_billed: r.total_billed,
+                total_paid: r.total_paid,
+                status: r.status,
+                phone: r.phone || '',
+                token: r.token,
+                sent_at: r.sent_at,
+                response_at: r.response_at,
+                response_status: r.response_status,
+                response_balance: r.response_balance,
+                response_note: r.response_note,
+                client_ip: r.client_ip,
+                created_at: r.created_at,
+                updated_at: r.updated_at
+            };
+        });
+
+        const stats = {
+            total: items.length,
+            sent: items.filter(i => i.status !== 'PENDING_SEND').length,
+            approved: items.filter(i => i.status === 'APPROVED').length,
+            disputed: items.filter(i => i.status === 'DISPUTED').length,
+            pending: items.filter(i => i.status === 'SENT').length,
+            missingPhone: items.filter(i => !i.phone || i.phone.trim().length < 10).length
+        };
+
+        res.json({ items, stats });
+    } catch (e) {
+        console.error('Mutabakat veri hatası:', e);
+        res.status(500).json({ error: 'Mutabakat verileri alınamadı: ' + e.message });
+    }
+});
+
+// Mutabakat Listesini Döneme Göre Hesapla & Veritabanına Yaz
+app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { period } = req.body;
+        if (!period) return res.status(400).json({ error: 'Dönem seçimi zorunludur.' });
+
+        // Tüm firmaları al
+        const firmRows = await db.all("SELECT id, data FROM firms");
+        const allTransactionsRows = await db.all("SELECT data FROM transactions");
+        const allTransactions = allTransactionsRows.map(r => {
+            try { return JSON.parse(r.data); } catch (_) { return null; }
+        }).filter(Boolean);
+
+        const now = new Date().toISOString();
+        let upsertedCount = 0;
+
+        await db.run('BEGIN IMMEDIATE TRANSACTION');
+
+        for (const fRow of firmRows) {
+            let firm = {};
+            try { firm = JSON.parse(fRow.data); } catch (_) {}
+            const firmId = fRow.id;
+
+            // Bu firmaya ait onaylı hareketler
+            const firmTrans = allTransactions.filter(t => String(t.firmId) === String(firmId) && (t.status === 'APPROVED' || !t.status));
+            const totalBilled = firmTrans.filter(t => t.type === 'FATURA' || t.type === 'INVOICE').reduce((s, t) => s + (Number(t.debt) || 0), 0);
+            const totalPaid = firmTrans.reduce((s, t) => s + (Number(t.credit) || 0), 0);
+            const balance = totalBilled - totalPaid;
+
+            // Var olan mutabakat kaydı var mı kontrol et
+            const existing = await db.get(
+                "SELECT * FROM reconciliations WHERE firm_id = ? AND period = ?",
+                [firmId, period]
+            );
+
+            const phone = firm.phone || existing?.phone || '';
+
+            if (existing) {
+                await db.run(
+                    `UPDATE reconciliations 
+                     SET balance = ?, total_billed = ?, total_paid = ?, phone = ?, updated_at = ?
+                     WHERE id = ?`,
+                    [balance, totalBilled, totalPaid, phone, now, existing.id]
+                );
+            } else {
+                const recId = 'rec_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+                const token = crypto.randomBytes(16).toString('hex');
+                await db.run(
+                    `INSERT INTO reconciliations (
+                        id, firm_id, period, balance, total_billed, total_paid, status, phone, token, created_at, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING_SEND', ?, ?, ?, ?)`,
+                    [recId, firmId, period, balance, totalBilled, totalPaid, phone, token, now, now]
+                );
+            }
+            upsertedCount++;
+        }
+
+        await db.run('COMMIT');
+
+        await logAuditEvent(req, 'RECONCILIATION_PREPARED', { period, count: upsertedCount }, 'SUCCESS');
+        res.json({ success: true, count: upsertedCount });
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        console.error('Mutabakat hazırlama hatası:', e);
+        res.status(500).json({ error: 'Mutabakat hazırlanamadı: ' + e.message });
+    }
+});
+
+// Telefon Numarası Güncelle
+app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { firmId, phone } = req.body;
+        if (!firmId) return res.status(400).json({ error: 'Firma ID zorunludur.' });
+
+        const cleanPhone = String(phone || '').trim();
+
+        // 1. Reconciliations tablosunu güncelle
+        await db.run("UPDATE reconciliations SET phone = ? WHERE firm_id = ?", [cleanPhone, firmId]);
+
+        // 2. Firms tablosundaki data JSON'ına da işle
+        const firmRow = await db.get("SELECT data FROM firms WHERE id = ?", [firmId]);
+        if (firmRow) {
+            try {
+                const fData = JSON.parse(firmRow.data);
+                fData.phone = cleanPhone;
+                await db.run("UPDATE firms SET data = ? WHERE id = ?", [JSON.stringify(fData), firmId]);
+            } catch (_) {}
+        }
+
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: 'Telefon güncellenemedi: ' + e.message });
+    }
+});
+
+// Tekli WhatsApp Gönderimi
+app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!isWaConnected || !waSocket) {
+            return res.status(400).json({ error: 'WhatsApp bağlı değil! Lütfen önce QR kodunu okutarak cihazı bağlayın.' });
+        }
+
+        const { reconciliationId } = req.body;
+        const rec = await db.get("SELECT * FROM reconciliations WHERE id = ?", [reconciliationId]);
+        if (!rec) return res.status(404).json({ error: 'Mutabakat kaydı bulunamadı.' });
+
+        const firm = await getFirmById(rec.firm_id);
+        if (!firm) return res.status(404).json({ error: 'Firma bulunamadı.' });
+
+        const targetPhone = formatPhoneForWhatsApp(rec.phone || firm.phone);
+        if (!targetPhone) {
+            return res.status(400).json({ error: 'Geçerli bir telefon numarası bulunamadı. Lütfen telefon alanını kontrol edin.' });
+        }
+
+        // PDF Üret
+        const transactions = await getTransactionsForFirm(rec.firm_id);
+        const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
+        const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
+
+        // Host adresini al (Cloudflare Tunnel veya Yerel Ağ)
+        const host = req.get('host');
+        const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
+
+        const balanceNum = Number(rec.balance) || 0;
+        let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
+        if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
+        else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
+
+        const caption = 
+            `Sayın Yetkili (*${firm.name}*),\n\n` +
+            `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
+            `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
+            `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
+            `Kayıtlarınızın mutabakatını teyit etmek için lütfen aşağıdaki güvenli bağlantıya tıklayarak yanıtınızı iletiniz:\n\n` +
+            `🔗 ${approvalUrl}\n\n` +
+            `_(Kayıtlarınız mutabıksa "Mutabıkız", fark varsa "Fark Var" butonuna basabilirsiniz.)_\n\n` +
+            `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`;
+
+        const jid = `${targetPhone}@s.whatsapp.net`;
+        await waSocket.sendMessage(jid, {
+            document: pdfBuffer,
+            mimetype: 'application/pdf',
+            fileName: filename,
+            caption: caption
+        });
+
+        const now = new Date().toISOString();
+        await db.run("UPDATE reconciliations SET status = 'SENT', sent_at = ?, updated_at = ? WHERE id = ?", [now, now, rec.id]);
+
+        await logAuditEvent(req, 'RECONCILIATION_SENT_SINGLE', { firmId: rec.firm_id, phone: targetPhone }, 'SUCCESS');
+        res.json({ success: true, message: `Mesaj başarıyla ${targetPhone} numarasına iletildi.` });
+    } catch (e) {
+        console.error('Tekli gönderim hatası:', e);
+        res.status(500).json({ error: 'WhatsApp gönderim hatası: ' + e.message });
+    }
+});
+
+// Toplu WhatsApp Gönderimi
+app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!isWaConnected || !waSocket) {
+            return res.status(400).json({ error: 'WhatsApp bağlı değil! Lütfen önce QR kodunu okutarak cihazı bağlayın.' });
+        }
+
+        const { period, firmIds } = req.body;
+        let query = "SELECT * FROM reconciliations WHERE period = ?";
+        let params = [period];
+
+        if (Array.isArray(firmIds) && firmIds.length > 0) {
+            query += ` AND firm_id IN (${firmIds.map(() => '?').join(',')})`;
+            params.push(...firmIds);
+        }
+
+        const recs = await db.all(query, params);
+        const validRecs = recs.filter(r => formatPhoneForWhatsApp(r.phone));
+
+        if (validRecs.length === 0) {
+            return res.status(400).json({ error: 'Gönderilecek telefon numarası olan firma bulunamadı.' });
+        }
+
+        const host = req.get('host');
+        const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+
+        // Arka planda kuyruk başlat
+        (async () => {
+            console.log(`[WhatsApp Toplu Mutabakat] ${validRecs.length} firmaya gönderim başlatıldı.`);
+            let sentCount = 0;
+
+            for (const rec of validRecs) {
+                try {
+                    const firm = await getFirmById(rec.firm_id);
+                    if (!firm) continue;
+
+                    const targetPhone = formatPhoneForWhatsApp(rec.phone || firm.phone);
+                    if (!targetPhone) continue;
+
+                    const transactions = await getTransactionsForFirm(rec.firm_id);
+                    const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
+                    const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+                    const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
+
+                    const approvalUrl = `${protocol}://${host}/mutabakat/${rec.token}`;
+
+                    const balanceNum = Number(rec.balance) || 0;
+                    let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
+                    if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
+                    else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
+
+                    const caption = 
+                        `Sayın Yetkili (*${firm.name}*),\n\n` +
+                        `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
+                        `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
+                        `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
+                        `Kayıtlarınızın mutabakatını teyit etmek için lütfen aşağıdaki güvenli bağlantıya tıklayarak yanıtınızı iletiniz:\n\n` +
+                        `🔗 ${approvalUrl}\n\n` +
+                        `_(Kayıtlarınız mutabıksa "Mutabıkız", fark varsa "Fark Var" butonuna basabilirsiniz.)_\n\n` +
+                        `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`;
+
+                    const jid = `${targetPhone}@s.whatsapp.net`;
+                    await waSocket.sendMessage(jid, {
+                        document: pdfBuffer,
+                        mimetype: 'application/pdf',
+                        fileName: filename,
+                        caption: caption
+                    });
+
+                    const now = new Date().toISOString();
+                    await db.run("UPDATE reconciliations SET status = 'SENT', sent_at = ?, updated_at = ? WHERE id = ?", [now, now, rec.id]);
+                    sentCount++;
+
+                    io.emit('reconciliation_progress', {
+                        current: sentCount,
+                        total: validRecs.length,
+                        firmName: firm.name,
+                        status: 'SUCCESS'
+                    });
+
+                    // Anti-Spam Gecikmesi: 4 ile 7 saniye arası bekle
+                    const delayMs = Math.floor(Math.random() * 3000) + 4000;
+                    await new Promise(r => setTimeout(r, delayMs));
+
+                } catch (sendErr) {
+                    console.error(`[WhatsApp Toplu Mutabakat] Firma ${rec.firm_id} gönderilemedi:`, sendErr);
+                }
+            }
+            console.log(`[WhatsApp Toplu Mutabakat] Tamamlandı. ${sentCount} adet mesaj gönderildi.`);
+        })().catch(err => console.error('[WhatsApp Toplu Mutabakat] Arka plan hatası:', err));
+
+        res.json({
+            success: true,
+            total: validRecs.length,
+            message: `${validRecs.length} firmaya otomatik WhatsApp mutabakat gönderimi başlatıldı.`
+        });
+    } catch (e) {
+        console.error('Toplu gönderim başlatma hatası:', e);
+        res.status(500).json({ error: 'Toplu gönderim başlatılamadı: ' + e.message });
+    }
+});
+
+// Durumu Sıfırla
+app.post('/api/reconciliation/reset/:id', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { id } = req.params;
+        await db.run("UPDATE reconciliations SET status = 'PENDING_SEND', response_at = NULL, response_status = NULL, response_note = NULL WHERE id = ?", [id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: 'Durum sıfırlanamadı: ' + e.message });
+    }
+});
+
+// =========================================================================
+// MÜŞTERİ ONLİNE MUTABAKAT ONAY VE İNCELEME SAYFASI (PUBLIC)
+// =========================================================================
+
+// Müşteri PDF İndirme (Public / Token Korumalı)
+app.get('/mutabakat/:token/pdf', async (req, res) => {
+    try {
+        if (!db) return res.status(500).send('Veritabanı hazır değil.');
+        const { token } = req.params;
+        const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
+        if (!rec) return res.status(404).send('Geçersiz veya süresi dolmuş mutabakat bağlantısı.');
+
+        const firm = await getFirmById(rec.firm_id);
+        if (!firm) return res.status(404).send('Firma bilgisi bulunamadı.');
+
+        const transactions = await getTransactionsForFirm(rec.firm_id);
+        const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
+        const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        res.send(pdfBuffer);
+    } catch (e) {
+        console.error('Mutabakat PDF hatası:', e);
+        res.status(500).send('PDF belgesi oluşturulamadı.');
+    }
+});
+
+// Müşteri Onay Yanıt API (Public / Token Korumalı)
+app.post('/api/mutabakat/public-respond', async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { token, status, responseBalance, responseNote } = req.body;
+        if (!token || !status) return res.status(400).json({ error: 'Eksik parametre.' });
+
+        const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
+        if (!rec) return res.status(404).json({ error: 'Geçersiz veya süresi dolmuş mutabakat bağlantısı.' });
+
+        const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Bilinmiyor';
+        const now = new Date().toISOString();
+
+        const dbStatus = status === 'MUTABIK' ? 'APPROVED' : 'DISPUTED';
+
+        await db.run(
+            `UPDATE reconciliations 
+             SET status = ?, response_status = ?, response_balance = ?, response_note = ?, response_at = ?, client_ip = ?, updated_at = ?
+             WHERE token = ?`,
+            [dbStatus, status, responseBalance ? Number(responseBalance) : null, responseNote || null, now, clientIp, now, token]
+        );
+
+        io.emit('mutabakat_response_received', {
+            token,
+            status: dbStatus,
+            firmId: rec.firm_id
+        });
+
+        res.json({ success: true, message: 'Yanıtınız başarıyla kaydedildi. Teşekkür ederiz.' });
+    } catch (e) {
+        console.error('Müşteri mutabakat yanıt hatası:', e);
+        res.status(500).json({ error: 'Yanıtınız kaydedilemedi: ' + e.message });
+    }
+});
+
+// Müşteri Landing Page (Mobil Uyumlu Onay Arayüzü)
+app.get('/mutabakat/:token', async (req, res) => {
+    try {
+        if (!db) return res.status(500).send('Veritabanı hazır değil.');
+        const { token } = req.params;
+        const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
+        if (!rec) {
+            return res.status(404).send(`
+                <!DOCTYPE html>
+                <html lang="tr">
+                <head>
+                    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Geçersiz Bağlantı | OSGB Mutabakat</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="bg-slate-950 text-slate-200 min-h-screen flex items-center justify-center p-4">
+                    <div class="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full text-center space-y-4 shadow-2xl">
+                        <div class="w-16 h-16 rounded-full bg-rose-500/10 text-rose-500 flex items-center justify-center mx-auto text-2xl font-bold">✕</div>
+                        <h1 class="text-xl font-bold text-white">Bağlantı Geçersiz</h1>
+                        <p class="text-xs text-slate-400">Bu mutabakat bağlantısı süresi dolmuş veya hatalı olabilir. Lütfen şirket yetkiliniz ile iletişime geçiniz.</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
+
+        const firm = await getFirmById(rec.firm_id);
+        const firmName = escapeHtml(firm?.name || 'Değerli Müşterimiz');
+        const periodStr = escapeHtml(rec.period);
+        const balanceNum = Number(rec.balance) || 0;
+        const balanceFormatted = Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 });
+
+        let bakiyeBadge = '';
+        let bakiyeKutuClass = '';
+        if (balanceNum > 0) {
+            bakiyeBadge = 'BORÇLU (Şirketimize Ödenmesi Gereken)';
+            bakiyeKutuClass = 'bg-rose-500/10 border-rose-500/30 text-rose-400';
+        } else if (balanceNum < 0) {
+            bakiyeBadge = 'ALACAKLI (Şirketimizden Alacağınız Bulunmaktadır)';
+            bakiyeKutuClass = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
+        } else {
+            bakiyeBadge = 'HESABIMIZ DENKTİR (Bakiye Yoktur)';
+            bakiyeKutuClass = 'bg-slate-800 border-slate-700 text-slate-300';
+        }
+
+        const isApproved = rec.status === 'APPROVED';
+        const isDisputed = rec.status === 'DISPUTED';
+        const hasResponded = isApproved || isDisputed;
+
+        res.send(`
+            <!DOCTYPE html>
+            <html lang="tr">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Cari Mutabakat Onayı | ${firmName}</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+                <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+                <style>
+                    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+                </style>
+            </head>
+            <body class="bg-slate-950 text-slate-200 min-h-screen flex items-center justify-center p-3 sm:p-6">
+                <div class="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+                    
+                    {/* Üst Logo ve Başlık */}
+                    <div class="text-center space-y-2 pb-4 border-b border-slate-800">
+                        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold">
+                            🛡️ OSGB ProFinans Cari Yönetimi
+                        </div>
+                        <h1 class="text-xl sm:text-2xl font-bold text-white tracking-tight">Cari Hesap Mutabakat Formu</h1>
+                        <p class="text-xs text-slate-400">Resmi Muhasebe & Finans Mutabakat Bildirimi</p>
+                    </div>
+
+                    {/* Müşteri ve Dönem Bilgisi */}
+                    <div class="bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 space-y-2 text-xs">
+                        <div class="flex justify-between items-center">
+                            <span class="text-slate-400">Firma Unvanı:</span>
+                            <span class="font-bold text-white text-right max-w-[260px] truncate">${firmName}</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-slate-400">Mutabakat Dönemi:</span>
+                            <span class="font-bold text-slate-200">${periodStr} İtibariyle</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-slate-400">Tarih:</span>
+                            <span class="text-slate-300">${new Date().toLocaleDateString('tr-TR')}</span>
+                        </div>
+                    </div>
+
+                    {/* Finansal Bakiye Göstergesi */}
+                    <div class="border rounded-2xl p-5 text-center space-y-1 ${bakiyeKutuClass}">
+                        <div class="text-xs font-semibold tracking-wider uppercase opacity-80">Kayıtlarımızdaki Bakiye</div>
+                        <div class="text-3xl sm:text-4xl font-extrabold font-mono tracking-tight">${balanceFormatted} TL</div>
+                        <div class="text-xs font-bold pt-1">${bakiyeBadge}</div>
+                    </div>
+
+                    {/* PDF İncele Butonu */}
+                    <div class="text-center">
+                        <a href="/mutabakat/${token}/pdf" target="_blank" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors shadow-sm">
+                            📄 Cari Hesap Ekstresini ve Resmi Mektubu İncele (PDF)
+                        </a>
+                    </div>
+
+                    {/* Onay Durum Alanı */}
+                    <div id="actionContainer">
+                        ${hasResponded ? `
+                            <div class="p-5 rounded-2xl ${isApproved ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2">
+                                <div class="text-3xl">${isApproved ? '✅' : '⚠️'}</div>
+                                <div class="font-bold text-sm text-white">${isApproved ? 'Kayıtlarımız Mutabıktır' : 'Fark / İtiraz Bildirimi Yapıldı'}</div>
+                                <div class="text-xs opacity-80">
+                                    ${isApproved ? `Bu mutabakat ${new Date(rec.response_at).toLocaleString('tr-TR')} tarihinde onaylanmıştır.` : `İlettiğiniz itiraz notu (${escapeHtml(rec.response_note || '')}) muhasebe birimimize ulaştırılmıştır.`}
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="space-y-4">
+                                <div class="text-center text-xs text-slate-400">
+                                    Lütfen yukarıdaki bakiye ve ekstreye göre mutabakat durumunuzu seçiniz:
+                                </div>
+
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button type="button" onclick="handleApprove()" class="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all">
+                                        <span>✅ Kayıtlarımız Mutabıktır</span>
+                                    </button>
+
+                                    <button type="button" onclick="showDisputeForm()" class="w-full py-3.5 px-4 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-rose-950 transition-all">
+                                        <span>❌ Fark Var (Mutabık Değiliz)</span>
+                                    </button>
+                                </div>
+
+                                {/* Fark Bildirim Formu (Gizli) */}
+                                <div id="disputeForm" class="hidden bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 mt-4 animate-in fade-in">
+                                    <div class="text-xs font-bold text-rose-400">Fark / İtiraz Detayları</div>
+                                    <div>
+                                        <label class="block text-[11px] text-slate-400 mb-1">Sizin Kayıtlarınızdaki Bakiye (TL - Opsiyonel)</label>
+                                        <input type="number" id="statedBalance" placeholder="Örn: 15000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] text-slate-400 mb-1">Farkın Nedeni / Açıklamanız <span class="text-rose-400">*</span></label>
+                                        <textarea id="disputeNote" rows="2" placeholder="Örn: Eylül ayı faturası tarafımıza ulaşmadı veya ödeme eksik işlenmiş..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500"></textarea>
+                                    </div>
+                                    <div class="flex items-center justify-end gap-2 pt-1">
+                                        <button type="button" onclick="hideDisputeForm()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
+                                        <button type="button" onclick="handleDisputeSubmit()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-md">Bildirimi İlet</button>
+                                    </div>
+                                </div>
+                            </div>
+                        `}
+                    </div>
+
+                    <div class="text-center text-[11px] text-slate-500 pt-3 border-t border-slate-800">
+                        Güvenli Veri Tabanı İletişimi • © ${new Date().getFullYear()} OSGB Finans Yönetimi
+                    </div>
+                </div>
+
+                <script>
+                    const TOKEN = "${token}";
+
+                    function showDisputeForm() {
+                        document.getElementById('disputeForm').classList.remove('hidden');
+                    }
+                    function hideDisputeForm() {
+                        document.getElementById('disputeForm').classList.add('hidden');
+                    }
+
+                    async function handleApprove() {
+                        if (!confirm("Kayıtların mutabık olduğunu onaylıyor musunuz?")) return;
+                        try {
+                            const res = await fetch('/api/mutabakat/public-respond', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ token: TOKEN, status: 'MUTABIK' })
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                                renderSuccessView('MUTABIK');
+                            } else {
+                                alert(data.error || 'İşlem başarısız.');
+                            }
+                        } catch (e) {
+                            alert('Bağlantı hatası oluştu.');
+                        }
+                    }
+
+                    async function handleDisputeSubmit() {
+                        const note = document.getElementById('disputeNote').value.trim();
+                        const balance = document.getElementById('statedBalance').value;
+                        if (!note) {
+                            alert('Lütfen farkın nedenini belirten kısa bir açıklama yazınız.');
+                            return;
+                        }
+
+                        try {
+                            const res = await fetch('/api/mutabakat/public-respond', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    token: TOKEN,
+                                    status: 'FARK_VAR',
+                                    responseBalance: balance || null,
+                                    responseNote: note
+                                })
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                                renderSuccessView('FARK_VAR');
+                            } else {
+                                alert(data.error || 'İşlem başarısız.');
+                            }
+                        } catch (e) {
+                            alert('Bağlantı hatası oluştu.');
+                        }
+                    }
+
+                    function renderSuccessView(status) {
+                        const isApp = status === 'MUTABIK';
+                        document.getElementById('actionContainer').innerHTML = \`
+                            <div class="p-5 rounded-2xl \${isApp ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2 animate-in zoom-in-95">
+                                <div class="text-4xl">\${isApp ? '✅' : '📩'}</div>
+                                <div class="font-bold text-base text-white">\${isApp ? 'Mutabakatınız Onaylandı!' : 'Bildiriminiz Alındı!'}</div>
+                                <div class="text-xs opacity-90">
+                                    \${isApp ? 'Yanıtınız şirketimiz finans departmanına iletilmiştir. Teşekkür ederiz.' : 'İlettiğiniz not finans ekibimize iletilmiştir, inceleme sonrası sizinle iletişime geçilecektir.'}
+                                </div>
+                            </div>
+                        \`;
+                    }
+                </script>
+            </body>
+            </html>
+        `);
+    } catch (e) {
+        console.error('Landing page hatası:', e);
+        res.status(500).send('Mutabakat sayfası yüklenemedi.');
     }
 });
 

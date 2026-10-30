@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -718,6 +718,88 @@ export const db = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Yetkili silinemedi.');
+    return data;
+  },
+
+  // --- CARİ MUTABAKAT & WHATSAPP METOTLARI ---
+  getWhatsAppStatus: async (): Promise<WhatsAppStatus> => {
+    const res = await fetchWithAuth('/api/whatsapp/status');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'WhatsApp durumu alınamadı.');
+    return data;
+  },
+
+  restartWhatsApp: async (): Promise<{ success: boolean }> => {
+    const res = await fetchWithAuth('/api/whatsapp/restart', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'WhatsApp yeniden başlatılamadı.');
+    return data;
+  },
+
+  disconnectWhatsApp: async (): Promise<{ success: boolean }> => {
+    const res = await fetchWithAuth('/api/whatsapp/disconnect', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'WhatsApp bağlantısı kesilemedi.');
+    return data;
+  },
+
+  getReconciliations: async (period: string): Promise<{ items: ReconciliationItem[]; stats: any }> => {
+    const res = await fetchWithAuth(`/api/reconciliation/data?period=${encodeURIComponent(period)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Mutabakat verileri alınamadı.');
+    return data;
+  },
+
+  prepareReconciliations: async (period: string): Promise<{ success: boolean; count: number }> => {
+    const res = await fetchWithAuth('/api/reconciliation/prepare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Mutabakat listesi hazırlanamadı.');
+    return data;
+  },
+
+  sendReconciliationBatch: async (period: string, firmIds?: string[]): Promise<{ success: boolean; total: number; message: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/send-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period, firmIds })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Toplu gönderim başlatılamadı.');
+    return data;
+  },
+
+  sendReconciliationSingle: async (reconciliationId: string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/send-single', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reconciliationId })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Mesaj gönderilemedi.');
+    return data;
+  },
+
+  updateFirmPhone: async (firmId: string, phone: string): Promise<{ success: boolean }> => {
+    const res = await fetchWithAuth('/api/reconciliation/update-phone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firmId, phone })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Telefon numarası güncellenemedi.');
+    return data;
+  },
+
+  resetReconciliationStatus: async (id: string): Promise<{ success: boolean }> => {
+    const res = await fetchWithAuth(`/api/reconciliation/reset/${id}`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Durum sıfırlanamadı.');
     return data;
   }
 };

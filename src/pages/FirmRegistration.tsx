@@ -17,6 +17,9 @@ const FirmRegistration = () => {
     doctorPercentage: 40,
     defaultInvoiceType: InvoiceType.E_FATURA,
     taxNumber: '',
+    phone: '',
+    email: '',
+    contactPerson: '',
     address: '',
     yearlyFee: 0,
     pricingModel: PricingModel.STANDARD,
@@ -691,8 +694,20 @@ const FirmRegistration = () => {
                         <input type="text" name="taxNumber" value={formData.taxNumber || ''} onChange={handleChange} placeholder="VKN veya TCKN" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
                     </div>
                     
+                    <div className="col-span-1">
+                        <label className="block text-xs font-medium text-emerald-400 mb-1 flex items-center gap-1.5">
+                            <span>Yetkili Telefon (WhatsApp)</span>
+                        </label>
+                        <input type="text" name="phone" value={formData.phone || ''} onChange={handleChange} placeholder="Örn: 0532 123 4567" className="w-full bg-slate-900 border border-emerald-500/40 rounded px-2 py-2 text-white text-sm focus:border-emerald-500 outline-none" />
+                    </div>
+
+                    <div className="col-span-1">
+                        <label className="block text-xs font-medium text-slate-300 mb-1">Yetkili / Muhasebe İlgilisi</label>
+                        <input type="text" name="contactPerson" value={formData.contactPerson || ''} onChange={handleChange} placeholder="İsim / Unvan" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
+                    </div>
+                    
                     {/* Firma Adresi (2 Kolon) */}
-                    <div className="col-span-1 md:col-span-2">
+                    <div className="col-span-1 md:col-span-3">
                         <label className="block text-xs font-medium text-slate-300 mb-1">Firma Adresi</label>
                         <textarea name="address" value={formData.address || ''} onChange={handleChange} placeholder="Fatura Adresi" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm h-[38px] resize-none overflow-hidden focus:border-blue-500 outline-none" />
                     </div>

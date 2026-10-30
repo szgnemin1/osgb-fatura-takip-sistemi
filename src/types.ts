@@ -32,6 +32,9 @@ export interface Firm {
   taxNumber?: string;
   sgkNumber?: string; // Hizmet Alan İşyeri SGK/DETSİS No
   address?: string;
+  phone?: string;
+  email?: string;
+  contactPerson?: string;
   yearlyFee?: number;
   pricingModel: PricingModel;
   tolerancePercentage?: number;
@@ -175,4 +178,36 @@ export interface TelegramAllowedUser {
   name: string;
   created_at: string;
 }
+
+// --- CARİ MUTABAKAT & WHATSAPP TİPLERİ ---
+export type ReconciliationStatus = 'PENDING_SEND' | 'SENT' | 'APPROVED' | 'DISPUTED';
+
+export interface ReconciliationItem {
+  id: string;
+  firm_id: string;
+  firm_name: string;
+  period: string;
+  balance: number;
+  total_billed: number;
+  total_paid: number;
+  status: ReconciliationStatus;
+  phone: string;
+  token: string;
+  sent_at?: string;
+  response_at?: string;
+  response_status?: 'MUTABIK' | 'FARK_VAR';
+  response_balance?: number;
+  response_note?: string;
+  client_ip?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface WhatsAppStatus {
+  isConnected: boolean;
+  qrCode: string | null;
+  phoneNumber?: string;
+  name?: string;
+}
+
 

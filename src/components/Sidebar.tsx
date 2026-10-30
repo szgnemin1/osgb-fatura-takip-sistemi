@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Building2, Calculator, Receipt, FileText, Settings, TrendingDown, LifeBuoy, X, Wallet, LogOut, FileSignature } from 'lucide-react';
+import { LayoutDashboard, Building2, Calculator, Receipt, FileText, Settings, TrendingDown, LifeBuoy, X, Wallet, LogOut, FileSignature, FileCheck } from 'lucide-react';
 import { db } from '../services/db';
 
 interface SidebarProps {
@@ -99,6 +99,10 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           <NavLink to="/debt-tracking" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
             <TrendingDown className="w-5 h-5" />
             <span>Borç Takip</span>
+          </NavLink>
+          <NavLink to="/mutabakat" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
+            <FileCheck className="w-5 h-5" />
+            <span>Cari Mutabakat</span>
           </NavLink>
           <NavLink to="/quotes" className={navClass} onClick={() => window.innerWidth < 768 && onClose()}>
             <FileSignature className="w-5 h-5" />

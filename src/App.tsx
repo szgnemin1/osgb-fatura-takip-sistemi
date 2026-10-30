@@ -9,6 +9,7 @@ import Invoices from './pages/Invoices';
 import FirmDetails from './pages/FirmDetails';
 import Settings from './pages/Settings';
 import DebtTracking from './pages/DebtTracking';
+import Reconciliation from './pages/Reconciliation';
 import Expenses from './pages/Expenses'; // Yeni Sayfa
 import Quotes from './pages/Quotes';
 import CuttingPortal from './pages/CuttingPortal';
@@ -208,6 +209,7 @@ const App = () => {
                 <Route path="/details" element={<FirmDetails />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/debt-tracking" element={<DebtTracking />} />
+                <Route path="/mutabakat" element={<Reconciliation />} />
                 <Route path="/support" element={<Navigate to="/" replace />} />
                 <Route path="/quotes" element={<Quotes />} />
                 <Route path="/kesim" element={<CuttingPortal />} />
