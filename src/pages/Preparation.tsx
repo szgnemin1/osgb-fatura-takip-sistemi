@@ -489,9 +489,9 @@ const Preparation = () => {
     return matchesSearch && matchesType && matchesUpload && matchesGroup;
   });
 
-  // --- EXCEL ŞABLON İNDİR ---
-  const handleDownloadPrepTemplate = (targetType: InvoiceType) => {
-    let firmsToExport = firms.filter(f => f.defaultInvoiceType === targetType);
+  // --- TEK BİRLEŞİK EXCEL ŞABLONU İNDİR ---
+  const handleDownloadUnifiedTemplate = () => {
+    let firmsToExport = firms;
     if (selectedGroup !== 'ALL') {
         if (selectedGroup === 'UNGROUPED') {
             firmsToExport = firmsToExport.filter(f => !f.group);
@@ -501,7 +501,7 @@ const Preparation = () => {
     }
 
     if (firmsToExport.length === 0) {
-        alert(`${selectedGroup !== 'ALL' ? `"${selectedGroup}" grubunda ` : ''}bu tipte (${targetType}) kayıtlı firma bulunamadı.`);
+        alert(`${selectedGroup !== 'ALL' ? `"${selectedGroup}" grubunda ` : ''}kayıtlı firma bulunamadı.`);
         return;
     }
     const data = firmsToExport.map(f => ({
@@ -516,7 +516,7 @@ const Preparation = () => {
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     const groupSuffix = selectedGroup !== 'ALL' ? `_${selectedGroup.replace(/\s+/g, '_')}` : '';
-    const fileName = targetType === InvoiceType.E_FATURA ? `E-Fatura${groupSuffix}_Hazirlik_Sablonu` : `E-Arsiv${groupSuffix}_Hazirlik_Sablonu`;
+    const fileName = `Fatura_Hazirlik_Sablonu${groupSuffix}`;
     XLSX.utils.book_append_sheet(workbook, worksheet, "Hazirlik_Listesi");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toLocaleDateString('tr-TR')}.xlsx`);
   };
@@ -891,11 +891,17 @@ const Preparation = () => {
 
   const handleInvoiceAll = async () => {
       const targetFirms = filteredFirms;
-      if (targetFirms.length === 0) return alert("Listede (veya filtrede) firma yok.");
+      if (targetFirms.length === 0) return alert("Listede (veya seçili grupta) faturalaştırılacak firma yok.");
       
-      const filterMsg = uploadedFirmIds.length > 0 ? "EXCEL İLE GÜNCELLENEN" : (filterType === 'ALL' ? 'TÜM' : filterType);
+      const groupLabel = selectedGroup === 'ALL' 
+          ? 'Tüm' 
+          : selectedGroup === 'UNGROUPED' 
+          ? 'Grupsuz' 
+          : `"${selectedGroup}" grubundaki`;
+
+      const uploadMsg = uploadedFirmIds.length > 0 ? " (Excel ile güncellenen)" : "";
       
-      if (!window.confirm(`${targetFirms.length} adet ${filterMsg} firma için taslak fatura oluşturulacak. Devam edilsin mi?`)) return;
+      if (!window.confirm(`${groupLabel} ${targetFirms.length} firma için taslak fatura oluşturulacak.${uploadMsg} Devam edilsin mi?`)) return;
 
       const date = new Date();
       const currentMonth = date.getMonth() + 1;
@@ -1021,7 +1027,18 @@ const Preparation = () => {
           <h2 className="text-2xl md:text-3xl font-bold text-slate-100 flex items-center gap-3"><Calculator className="w-8 h-8 text-yellow-500" /> Fatura Hazırlık</h2>
           <p className="text-slate-400 mt-2 text-sm">Çalışan sayılarını girin. <span className="text-blue-400 font-bold">Havuz (Şube)</span> firmaları <span className="text-yellow-400 font-bold">ayrı ayrı hesaplanıp</span> ana firmada toplanır.</p>
         </div>
-        <button onClick={handleInvoiceAll} className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-105 active:scale-95"><Save className="w-5 h-5" /> Görünenleri Faturalaştır</button>
+        <button 
+          onClick={handleInvoiceAll} 
+          disabled={filteredFirms.length === 0}
+          className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-105 active:scale-95"
+        >
+          <Save className="w-5 h-5" /> 
+          {selectedGroup !== 'ALL' && selectedGroup !== 'UNGROUPED' 
+            ? `3. "${selectedGroup}" Grubunu Faturalaştır (${filteredFirms.length})` 
+            : selectedGroup === 'UNGROUPED'
+            ? `3. Grupsuz Firmaları Faturalaştır (${filteredFirms.length})`
+            : `3. Görünenleri Faturalaştır (${filteredFirms.length})`}
+        </button>
       </header>
       
       {/* ARAÇ ÇUBUĞU */}
@@ -1061,21 +1078,35 @@ const Preparation = () => {
                      )}
                 </div>
                 
-                <div className="flex flex-col md:flex-row gap-2 xl:justify-end flex-1">
-                     <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_FATURA)} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-indigo-500 shadow-sm"><FileSpreadsheet className="w-4 h-4" /> E-Fatura Şablon</button>
-                     <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_ARSIV)} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-orange-500 shadow-sm"><FileSpreadsheet className="w-4 h-4" /> E-Arşiv Şablon</button>
-                     <div className="relative flex-1">
+                <div className="flex flex-col sm:flex-row items-center gap-2 xl:justify-end flex-1">
+                     <div className="relative flex-1 w-full sm:w-auto">
                          <input type="file" ref={fileInputRef} onChange={handleUploadPrepData} accept=".xlsx, .xls" className="hidden" />
-                         <button onClick={() => fileInputRef.current?.click()} className="w-full h-full bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 border border-slate-600 transition-colors shadow-sm"><Upload className="w-4 h-4" /> Veri Yükle</button>
+                         <button 
+                             type="button" 
+                             onClick={() => fileInputRef.current?.click()} 
+                             className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs sm:text-sm px-4 py-2.5 rounded-lg flex items-center justify-center gap-2 border border-emerald-500 transition-colors shadow-sm"
+                         >
+                             <Upload className="w-4 h-4" /> 
+                             <span>1. Excel Verisi Yükle</span>
+                         </button>
                      </div>
+                     <button 
+                         type="button" 
+                         onClick={handleDownloadUnifiedTemplate} 
+                         className="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors border border-slate-600 shadow-sm"
+                         title="Firma listesi ile tek Excel şablonu indir"
+                     >
+                         <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                         <span>Örnek Şablon</span>
+                     </button>
                 </div>
            </div>
 
            {/* Alt Satır: FİRMA GRUPLARI SEÇİCİ & YÖNETİMİ (Grup 1, Grup 2, +, ⚙️) */}
            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-700/60">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300 mr-1 shrink-0">
-                    <Folder className="w-4 h-4 text-amber-400" />
-                    <span>Gruplar:</span>
+                <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 mr-1 shrink-0">
+                    <Folder className="w-4 h-4" />
+                    <span>2. Grup Seç:</span>
                 </div>
 
                 {/* Tümü Butonu */}

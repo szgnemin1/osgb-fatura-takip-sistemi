@@ -1,10 +1,15 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
-import { Save, Building2, CheckCircle2, Trash2, Edit, Plus, X, Network, Stethoscope, CheckSquare, Square, Search, FileText, Upload } from 'lucide-react';
+import { 
+  Save, Building2, CheckCircle2, Trash2, Edit, Plus, X, Network, Stethoscope, 
+  CheckSquare, Square, Search, FileText, Upload, Folder, Settings, Phone, Mail, 
+  User, MapPin, Hash, DollarSign, Layers 
+} from 'lucide-react';
 import { InvoiceType, Firm, PricingModel, PricingTier, ServiceType } from '../types';
 import * as XLSX from 'xlsx';
 import { v4 as uuidv4 } from 'uuid';
+import { GroupManagerModal } from '../components/GroupManagerModal';
 
 const FirmRegistration = () => {
   const initialFormState: Omit<Firm, 'id'> = {
@@ -44,6 +49,7 @@ const FirmRegistration = () => {
   const [selectedFirms, setSelectedFirms] = useState<string[]>([]);
   const [firmGroups, setFirmGroups] = useState<string[]>([]);
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('ALL');
+  const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
   
   // Arama State
   const [searchTerm, setSearchTerm] = useState('');
@@ -637,218 +643,449 @@ const FirmRegistration = () => {
 
       <form onSubmit={handleSubmit} className="bg-slate-800 border border-slate-700 rounded-xl p-6 shadow-xl mb-12 relative">
         {isEditing && (
-            <button type="button" onClick={handleCancelEdit} className="absolute top-2 right-4 text-slate-500 hover:text-white"><X className="w-6 h-6" /></button>
+            <div className="mb-6 p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg flex items-center justify-between text-amber-300">
+                <div className="flex items-center gap-2">
+                    <Edit className="w-5 h-5" />
+                    <span><b>{formData.name}</b> firmasını düzenliyorsunuz. Değişiklikleri kaydetmek için formu güncelleyin.</span>
+                </div>
+                <button 
+                    type="button" 
+                    onClick={handleCancelEdit} 
+                    className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded border border-slate-600 flex items-center gap-1 transition-colors"
+                >
+                    <X className="w-4 h-4" /> Düzenlemeyi İptal Et
+                </button>
+            </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           
-          {/* SOL: TEMEL BİLGİLER */}
+          {/* SOL SÜTUN: FİRMA BİLGİLERİ, İLETİŞİM & VERGİ */}
           <div className="space-y-6">
-            <h3 className="text-lg font-semibold text-slate-200 border-b border-slate-700 pb-2">Genel Bilgiler</h3>
             
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Firma Adı</label>
-                <input required type="text" name="name" value={formData.name} onChange={handleChange} placeholder="Örn: ABC İnşaat Ltd. Şti." className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 outline-none" />
-              </div>
-              
-              <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1 flex items-center gap-2">
-                      <Network className="w-4 h-4 text-purple-400" />
-                      Bağlı Olduğu Ana Firma (Şube ise Seçiniz)
-                  </label>
-                  <select name="parentFirmId" value={formData.parentFirmId || ''} onChange={handleChange} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:ring-2 focus:ring-blue-500 outline-none">
-                      <option value="">-- Yok (Ana Firma) --</option>
-                      {existingFirms
-                          .filter(f => isEditing ? f.id !== (formData as Firm).id : true) // Kendini seçemesin
-                          .map(f => (
-                              <option key={f.id} value={f.id}>{f.name}</option>
-                          ))
-                      }
-                  </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                  <div className="bg-slate-900/50 p-2 rounded-lg border border-slate-700">
-                    <label className="block text-xs font-bold text-slate-400 mb-1 uppercase">Varsayılan Fatura Tipi</label>
-                    <div className="flex gap-2">
-                        <label className={`flex-1 cursor-pointer text-center py-2 rounded text-xs font-bold transition-all ${formData.defaultInvoiceType === InvoiceType.E_FATURA ? 'bg-indigo-600 text-white shadow' : 'bg-slate-800 text-slate-500 hover:bg-slate-700'}`}>
-                            <input type="radio" name="defaultInvoiceType" value={InvoiceType.E_FATURA} checked={formData.defaultInvoiceType === InvoiceType.E_FATURA} onChange={handleChange} className="hidden" />
-                            E-FATURA
-                        </label>
-                        <label className={`flex-1 cursor-pointer text-center py-2 rounded text-xs font-bold transition-all ${formData.defaultInvoiceType === InvoiceType.E_ARSIV ? 'bg-orange-600 text-white shadow' : 'bg-slate-800 text-slate-500 hover:bg-slate-700'}`}>
-                            <input type="radio" name="defaultInvoiceType" value={InvoiceType.E_ARSIV} checked={formData.defaultInvoiceType === InvoiceType.E_ARSIV} onChange={handleChange} className="hidden" />
-                            E-ARŞİV
-                        </label>
-                    </div>
+            {/* KART 1: TEMEL FİRMA TANIMI */}
+            <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/80 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-700/70 pb-2.5">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                        <Building2 className="w-5 h-5 text-blue-400" />
+                        Temel Firma Bilgileri
+                    </h3>
+                    <span className="text-[11px] text-slate-400 font-mono">1. Adım</span>
                 </div>
-                 <div>
-                    <label className="block text-sm font-medium text-purple-400 mb-1">Yıllık İşlem Ücreti</label>
-                    <input type="number" name="yearlyFee" value={formData.yearlyFee} onChange={handleChange} className="w-full bg-slate-900 border border-purple-500/30 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-purple-500 outline-none" />
+
+                {/* Firma Adı */}
+                <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                        Firma Ünvanı / Adı <span className="text-red-400">*</span>
+                    </label>
+                    <input 
+                        required 
+                        type="text" 
+                        name="name" 
+                        value={formData.name} 
+                        onChange={handleChange} 
+                        placeholder="Örn: ABC İnşaat ve Sanayi Ltd. Şti." 
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-white font-medium focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-sm transition-all" 
+                    />
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-sm font-medium text-emerald-400 mb-1 flex items-center gap-2">
-                    <Stethoscope className="w-4 h-4" /> Hizmet Kapsamı
-                </label>
-                <select name="serviceType" value={formData.serviceType || ServiceType.BOTH} onChange={handleChange} className="w-full bg-slate-900 border border-emerald-500/30 rounded-lg px-3 py-2 text-white focus:ring-2 focus:ring-emerald-500 outline-none">
-                    <option value={ServiceType.BOTH}>Tümü (Uzman + Hekim)</option>
-                    <option value={ServiceType.EXPERT_ONLY}>Sadece İş Güvenliği Uzmanı</option>
-                    <option value={ServiceType.DOCTOR_ONLY}>Sadece İşyeri Hekimi</option>
-                </select>
-                <p className="text-xs text-slate-500 mt-1">Fatura açıklaması ve hesaplama bu seçime göre yapılır.</p>
-              </div>
-
-                {/* VERGİ VE ADRES (HER ZAMAN GÖRÜNÜR) */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 p-3 bg-slate-700/30 border border-slate-600 rounded-lg">
-                    <div className="col-span-1 md:col-span-3 text-[10px] text-slate-400 flex items-center gap-2">
-                        <FileText className="w-3 h-3" />
-                        <span>Fatura kesimi için aşağıdaki bilgilerin doğruluğu önemlidir.</span>
-                    </div>
-                    
-                    {/* Vergi No (1 Kolon) */}
-                    <div className="col-span-1">
-                        <label className="block text-xs font-medium text-slate-300 mb-1">Vergi No / TCKN</label>
-                        <input type="text" name="taxNumber" value={formData.taxNumber || ''} onChange={handleChange} placeholder="VKN veya TCKN" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
-                    </div>
-                    
-                    <div className="col-span-1">
-                        <label className="block text-xs font-medium text-emerald-400 mb-1 flex items-center gap-1.5">
-                            <span>Yetkili Telefon (WhatsApp)</span>
-                        </label>
-                        <input type="text" name="phone" value={formData.phone || ''} onChange={handleChange} placeholder="Örn: 0532 123 4567" className="w-full bg-slate-900 border border-emerald-500/40 rounded px-2 py-2 text-white text-sm focus:border-emerald-500 outline-none" />
-                    </div>
-
-                    <div className="col-span-1">
-                        <label className="block text-xs font-medium text-blue-400 mb-1 flex items-center gap-1.5">
-                            <span>Yetkili E-Posta (Mutabakat)</span>
-                        </label>
-                        <input type="email" name="email" value={formData.email || ''} onChange={handleChange} placeholder="muhasebe@firma.com" className="w-full bg-slate-900 border border-blue-500/40 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
-                    </div>
-
-                    <div className="col-span-1">
-                        <label className="block text-xs font-medium text-slate-300 mb-1">Yetkili / Muhasebe İlgilisi</label>
-                        <input type="text" name="contactPerson" value={formData.contactPerson || ''} onChange={handleChange} placeholder="İsim / Unvan" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
-                    </div>
-
-                    <div className="col-span-1">
-                        <label className="block text-xs font-medium text-amber-400 mb-1 flex items-center gap-1.5">
-                            <span>Firma Grubu</span>
-                        </label>
+                {/* Firma Grubu & Ana Firma (2 Kolon) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Firma Grubu */}
+                    <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                                <Folder className="w-3.5 h-3.5" />
+                                <span>Firma Grubu</span>
+                            </label>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const name = window.prompt("Yeni oluşturulacak grup adını giriniz:");
+                                    if (name && name.trim()) {
+                                        const updated = db.addFirmGroup(name.trim());
+                                        setFirmGroups(updated);
+                                        setFormData(prev => ({ ...prev, group: name.trim() }));
+                                    }
+                                }}
+                                className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-0.5 hover:underline"
+                                title="Yeni Grup Ekle"
+                            >
+                                <Plus className="w-3 h-3" /> Yeni
+                            </button>
+                        </div>
                         <select 
                             name="group" 
                             value={formData.group || ''} 
                             onChange={handleChange} 
-                            className="w-full bg-slate-900 border border-amber-500/40 rounded px-2 py-2 text-white text-sm focus:border-amber-500 outline-none cursor-pointer"
+                            className="w-full bg-slate-950 border border-amber-500/40 rounded-lg px-3 py-2 text-white text-sm focus:border-amber-500 outline-none cursor-pointer"
                         >
-                            <option value="">Grupsuz (Genel)</option>
+                            <option value="">-- Grupsuz (Genel) --</option>
                             {firmGroups.map(g => (
                                 <option key={g} value={g}>{g}</option>
                             ))}
                         </select>
                     </div>
-                    
-                    {/* Firma Adresi (2 Kolon) */}
-                    <div className="col-span-1 md:col-span-3">
-                        <label className="block text-xs font-medium text-slate-300 mb-1">Firma Adresi</label>
-                        <textarea name="address" value={formData.address || ''} onChange={handleChange} placeholder="Fatura Adresi" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm h-[38px] resize-none overflow-hidden focus:border-blue-500 outline-none" />
+
+                    {/* Bağlı Olduğu Ana Firma */}
+                    <div>
+                        <label className="block text-xs font-semibold text-purple-300 mb-1.5 flex items-center gap-1.5">
+                            <Network className="w-3.5 h-3.5" />
+                            <span>Bağlı Olduğu Ana Firma</span>
+                        </label>
+                        <select 
+                            name="parentFirmId" 
+                            value={formData.parentFirmId || ''} 
+                            onChange={handleChange} 
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 outline-none cursor-pointer"
+                        >
+                            <option value="">-- Yok (Bağımsız / Ana Firma) --</option>
+                            {existingFirms
+                                .filter(f => isEditing ? f.id !== (formData as Firm).id : true)
+                                .map(f => (
+                                    <option key={f.id} value={f.id}>{f.name}</option>
+                                ))
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                {/* Fatura Tipi & Hizmet Kapsamı (2 Kolon) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    {/* Fatura Tipi */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                            Varsayılan Fatura Tipi
+                        </label>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setFormData(prev => ({ ...prev, defaultInvoiceType: InvoiceType.E_FATURA }))}
+                                className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all border ${
+                                    formData.defaultInvoiceType === InvoiceType.E_FATURA
+                                        ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-950'
+                                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-white'
+                                }`}
+                            >
+                                E-FATURA
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setFormData(prev => ({ ...prev, defaultInvoiceType: InvoiceType.E_ARSIV }))}
+                                className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all border ${
+                                    formData.defaultInvoiceType === InvoiceType.E_ARSIV
+                                        ? 'bg-orange-600 text-white border-orange-500 shadow-md shadow-orange-950'
+                                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-white'
+                                }`}
+                            >
+                                E-ARŞİV
+                            </button>
+                        </div>
                     </div>
 
-                    {/* SGK Numaraları (Tam Genişlik) */}
-                    <div className="col-span-1 md:col-span-3">
-                        <label className="block text-xs font-medium text-slate-300 mb-1">SGK / DETSİS Numaraları</label>
-                        <div className="flex flex-col gap-2 p-2.5 bg-slate-900 border border-slate-600 rounded">
-                            {formData.sgkNumber && formData.sgkNumber.split(',').map(s => s.trim()).filter(Boolean).length > 0 && (
-                                <div className="flex flex-wrap gap-2">
-                                    {formData.sgkNumber.split(',').map(s => s.trim()).filter(Boolean).map((sgk, idx) => (
-                                        <div key={idx} className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-full border border-slate-700 shadow-sm">
-                                            <span className="text-sm text-slate-200 font-mono tracking-wide">{sgk}</span>
-                                            <button type="button" onClick={() => handleRemoveSgk(sgk)} className="text-red-400 hover:text-red-300 hover:bg-slate-700 rounded-full p-0.5 transition-colors">
-                                                <X size={14} />
-                                            </button>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                            <div className="flex gap-2 mt-1">
-                                <input 
-                                    type="text" 
-                                    value={newSgkInput} 
-                                    onChange={(e) => setNewSgkInput(e.target.value)} 
-                                    onKeyDown={(e) => { if(e.key === 'Enter') { e.preventDefault(); handleAddSgk(); } }}
-                                    placeholder="Yeni SGK veya DETSİS numarası girip ekle..." 
-                                    className="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white text-sm focus:border-blue-500 outline-none" 
-                                />
-                                <button type="button" onClick={handleAddSgk} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-medium transition-colors flex items-center gap-1 shadow-sm">
-                                    <Plus size={16} /> SGK Ekle
-                                </button>
-                            </div>
-                        </div>
+                    {/* Hizmet Kapsamı */}
+                    <div>
+                        <label className="block text-xs font-semibold text-emerald-400 mb-1.5 flex items-center gap-1.5">
+                            <Stethoscope className="w-3.5 h-3.5" />
+                            <span>Hizmet Kapsamı</span>
+                        </label>
+                        <select 
+                            name="serviceType" 
+                            value={formData.serviceType || ServiceType.BOTH} 
+                            onChange={handleChange} 
+                            className="w-full bg-slate-950 border border-emerald-500/40 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 outline-none cursor-pointer"
+                        >
+                            <option value={ServiceType.BOTH}>Tümü (Uzman + Hekim)</option>
+                            <option value={ServiceType.EXPERT_ONLY}>Sadece İş Güvenliği Uzmanı</option>
+                            <option value={ServiceType.DOCTOR_ONLY}>Sadece İşyeri Hekimi</option>
+                        </select>
                     </div>
                 </div>
             </div>
+
+            {/* KART 2: VERGİ, İLETİŞİM & SGK BİLGİLERİ */}
+            <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/80 space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-700/70 pb-2.5">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-emerald-400" />
+                        Vergi, İletişim & SGK Bilgileri
+                    </h3>
+                    <span className="text-[11px] text-slate-400 font-mono">2. Adım</span>
+                </div>
+
+                {/* Vergi No & Yetkili Adı (2 Kolon) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                            <Hash className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Vergi No / TCKN</span>
+                        </label>
+                        <input 
+                            type="text" 
+                            name="taxNumber" 
+                            value={formData.taxNumber || ''} 
+                            onChange={handleChange} 
+                            placeholder="VKN veya TCKN" 
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 outline-none" 
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                            <User className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Yetkili / Muhasebe İlgilisi</span>
+                        </label>
+                        <input 
+                            type="text" 
+                            name="contactPerson" 
+                            value={formData.contactPerson || ''} 
+                            onChange={handleChange} 
+                            placeholder="Ad Soyad / Unvan" 
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 outline-none" 
+                        />
+                    </div>
+                </div>
+
+                {/* Telefon & E-Posta (2 Kolon) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label className="block text-xs font-semibold text-emerald-400 mb-1.5 flex items-center gap-1.5">
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>Yetkili Telefon (WhatsApp)</span>
+                        </label>
+                        <input 
+                            type="text" 
+                            name="phone" 
+                            value={formData.phone || ''} 
+                            onChange={handleChange} 
+                            placeholder="Örn: 0532 123 4567" 
+                            className="w-full bg-slate-950 border border-emerald-500/40 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 outline-none" 
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-semibold text-blue-400 mb-1.5 flex items-center gap-1.5">
+                            <Mail className="w-3.5 h-3.5" />
+                            <span>Yetkili E-Posta (Mutabakat)</span>
+                        </label>
+                        <input 
+                            type="email" 
+                            name="email" 
+                            value={formData.email || ''} 
+                            onChange={handleChange} 
+                            placeholder="muhasebe@firma.com" 
+                            className="w-full bg-slate-950 border border-blue-500/40 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 outline-none" 
+                        />
+                    </div>
+                </div>
+
+                {/* Firma Adresi */}
+                <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Firma Adresi</span>
+                    </label>
+                    <textarea 
+                        name="address" 
+                        rows={2}
+                        value={formData.address || ''} 
+                        onChange={handleChange} 
+                        placeholder="Fatura adresi ve semt / il..." 
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm resize-y focus:border-blue-500 outline-none" 
+                    />
+                </div>
+
+                {/* SGK / DETSİS Numaraları */}
+                <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-blue-400" />
+                        <span>SGK / DETSİS Sicil Numaraları</span>
+                    </label>
+                    <div className="bg-slate-950 border border-slate-700 rounded-lg p-3 space-y-2">
+                        {formData.sgkNumber && formData.sgkNumber.split(',').map(s => s.trim()).filter(Boolean).length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                                {formData.sgkNumber.split(',').map(s => s.trim()).filter(Boolean).map((sgk, idx) => (
+                                    <div key={idx} className="flex items-center gap-1.5 bg-slate-800 px-3 py-1 rounded-full border border-slate-600 shadow-sm text-xs">
+                                        <span className="text-slate-200 font-mono tracking-wide">{sgk}</span>
+                                        <button 
+                                            type="button" 
+                                            onClick={() => handleRemoveSgk(sgk)} 
+                                            className="text-red-400 hover:text-red-300 hover:bg-slate-700 rounded-full p-0.5 transition-colors"
+                                            title="Kaldır"
+                                        >
+                                            <X size={13} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <div className="flex gap-2">
+                            <input 
+                                type="text" 
+                                value={newSgkInput} 
+                                onChange={(e) => setNewSgkInput(e.target.value)} 
+                                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddSgk(); } }}
+                                placeholder="Yeni sicil numarası girip ekleyin..." 
+                                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs focus:border-blue-500 outline-none" 
+                            />
+                            <button 
+                                type="button" 
+                                onClick={handleAddSgk} 
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1 shadow-sm"
+                            >
+                                <Plus size={14} /> Ekle
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
           </div>
 
-          {/* SAĞ: FİYATLANDIRMA MODELLERİ */}
+          {/* SAĞ SÜTUN: FİYATLANDIRMA VE MALİ KONTROLLER */}
           <div className="space-y-6">
-             <h3 className="text-lg font-semibold text-slate-200 border-b border-slate-700 pb-2">Fiyatlandırma Kurgusu</h3>
-             
-             {/* KDV Hariç Seçeneği */}
-             <div className="flex items-center gap-2 bg-slate-900/50 p-3 rounded-lg border border-slate-700">
-                <input 
-                    type="checkbox" 
-                    id="isKdvExcluded" 
-                    name="isKdvExcluded" 
-                    checked={formData.isKdvExcluded || false} 
-                    onChange={handleChange} 
-                    className="w-5 h-5 rounded border-slate-600 text-blue-600 focus:ring-blue-500" 
-                />
-                <div>
-                    <label htmlFor="isKdvExcluded" className="block text-sm font-bold text-white cursor-pointer select-none">Fiyatlar KDV Hariç</label>
-                    <p className="text-xs text-slate-500">Seçilirse, girilen fiyatlar <b>Net</b> kabul edilir ve üzerine KDV eklenerek fatura oluşturulur.</p>
-                </div>
+
+             {/* KART 3: MALİ PARAMETRELER (KDV & YILLIK ÜCRET) */}
+             <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/80 space-y-4">
+                 <div className="flex items-center justify-between border-b border-slate-700/70 pb-2.5">
+                     <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                         <DollarSign className="w-5 h-5 text-yellow-400" />
+                         Mali Parametreler & Ücretler
+                     </h3>
+                     <span className="text-[11px] text-slate-400 font-mono">3. Adım</span>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                     {/* KDV Hariç / Dahil Toggle */}
+                     <div className="bg-slate-950 p-3 rounded-lg border border-slate-700 flex items-start gap-2.5">
+                         <input 
+                             type="checkbox" 
+                             id="isKdvExcluded" 
+                             name="isKdvExcluded" 
+                             checked={formData.isKdvExcluded || false} 
+                             onChange={handleChange} 
+                             className="w-4 h-4 mt-0.5 rounded border-slate-600 text-blue-600 focus:ring-blue-500 cursor-pointer" 
+                         />
+                         <div>
+                             <label htmlFor="isKdvExcluded" className="block text-xs font-bold text-white cursor-pointer select-none">
+                                 Fiyatlar KDV Hariçtir
+                             </label>
+                             <p className="text-[11px] text-slate-400 mt-0.5">İşaretlenirse girilen tutarlar Net sayılır, KDV faturaya ayrıca eklenir.</p>
+                         </div>
+                     </div>
+
+                     {/* Yıllık Ücret */}
+                     <div className="bg-slate-950 p-3 rounded-lg border border-purple-500/30">
+                         <label className="block text-xs font-bold text-purple-300 mb-1">
+                             Yıllık Bakım / İşlem Ücreti (TL)
+                         </label>
+                         <div className="relative">
+                             <input 
+                                 type="number" 
+                                 name="yearlyFee" 
+                                 value={formData.yearlyFee} 
+                                 onChange={handleChange} 
+                                 className="w-full bg-slate-900 border border-purple-500/40 rounded px-3 py-1.5 text-white text-sm font-semibold focus:border-purple-400 outline-none" 
+                             />
+                             <span className="absolute right-3 top-1.5 text-xs text-purple-400 font-bold">₺/yıl</span>
+                         </div>
+                     </div>
+                 </div>
              </div>
 
-             {/* MODEL 1 */}
-             <div className="p-2 bg-slate-700/30 rounded-lg border border-slate-600">
-                <div className="flex justify-between items-center mb-3">
-                    <span className="font-bold text-blue-400 text-sm">Ana Model (Zorunlu)</span>
-                    <select name="pricingModel" value={formData.pricingModel} onChange={handleChange} className="bg-slate-900 border border-slate-600 rounded text-xs px-2 py-1 text-white outline-none">
-                        <option value={PricingModel.STANDARD}>Standart</option>
-                        <option value={PricingModel.TOLERANCE}>Toleranslı</option>
-                        <option value={PricingModel.TIERED}>Kademeli</option>
-                    </select>
-                </div>
-                {renderPricingFields('', formData.pricingModel, formData.tiers || [], handleAddTier, removeTier, newTier, setNewTier)}
+             {/* KART 4: ANA FİYATLANDIRMA MODELİ (ZORUNLU) */}
+             <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-700/80 space-y-4">
+                 <div className="flex justify-between items-center border-b border-slate-700/70 pb-2.5">
+                     <span className="font-bold text-blue-400 text-sm flex items-center gap-1.5">
+                         <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                         Ana Model (Zorunlu)
+                     </span>
+                     <select 
+                         name="pricingModel" 
+                         value={formData.pricingModel} 
+                         onChange={handleChange} 
+                         className="bg-slate-950 border border-blue-500/40 rounded-lg text-xs px-3 py-1.5 text-white font-semibold outline-none cursor-pointer" 
+                     >
+                         <option value={PricingModel.STANDARD}>Standart Model</option>
+                         <option value={PricingModel.TOLERANCE}>Toleranslı Model</option>
+                         <option value={PricingModel.TIERED}>Kademeli Model</option>
+                     </select>
+                 </div>
+                 {renderPricingFields('', formData.pricingModel, formData.tiers || [], handleAddTier, removeTier, newTier, setNewTier)}
              </div>
 
-             {/* MODEL 2 */}
-             <div className={`p-2 rounded-lg border transition-all ${formData.hasSecondaryModel ? 'bg-slate-700/30 border-slate-600' : 'bg-slate-800 border-slate-700 opacity-60'}`}>
-                <div className="flex justify-between items-center mb-3">
-                    <div className="flex items-center gap-2">
-                        <input type="checkbox" name="hasSecondaryModel" id="secModelCheck" checked={formData.hasSecondaryModel} onChange={handleChange} className="w-4 h-4 rounded border-slate-600 text-blue-600 focus:ring-blue-500" />
-                        <label htmlFor="secModelCheck" className="font-bold text-emerald-400 text-sm cursor-pointer select-none">İkincil Model (Ek Hizmet vb.)</label>
-                    </div>
-                    {formData.hasSecondaryModel && (
-                        <select name="secondaryPricingModel" value={formData.secondaryPricingModel} onChange={handleChange} className="bg-slate-900 border border-slate-600 rounded text-xs px-2 py-1 text-white outline-none">
-                            <option value={PricingModel.STANDARD}>Standart</option>
-                            <option value={PricingModel.TIERED}>Kademeli</option>
-                        </select>
-                    )}
-                </div>
-                {formData.hasSecondaryModel && renderPricingFields('secondary', formData.secondaryPricingModel || PricingModel.STANDARD, formData.secondaryTiers || [], handleAddSecTier, removeSecTier, newSecTier, setNewSecTier)}
+             {/* KART 5: İKİNCİL FİYATLANDIRMA MODELİ (OPSİYONEL) */}
+             <div className={`p-5 rounded-xl border transition-all ${
+                 formData.hasSecondaryModel 
+                     ? 'bg-slate-900/60 border-emerald-500/40' 
+                     : 'bg-slate-900/30 border-slate-800 opacity-60'
+             }`}>
+                 <div className="flex justify-between items-center mb-3">
+                     <div className="flex items-center gap-2">
+                         <input 
+                             type="checkbox" 
+                             name="hasSecondaryModel" 
+                             id="secModelCheck" 
+                             checked={formData.hasSecondaryModel} 
+                             onChange={handleChange} 
+                             className="w-4 h-4 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500 cursor-pointer" 
+                         />
+                         <label htmlFor="secModelCheck" className="font-bold text-emerald-400 text-sm cursor-pointer select-none">
+                             İkincil Model Ekle (Ek Hizmet / Özel Tarife)
+                         </label>
+                     </div>
+                     {formData.hasSecondaryModel && (
+                         <select 
+                             name="secondaryPricingModel" 
+                             value={formData.secondaryPricingModel} 
+                             onChange={handleChange} 
+                             className="bg-slate-950 border border-emerald-500/40 rounded-lg text-xs px-3 py-1.5 text-white font-semibold outline-none cursor-pointer" 
+                         >
+                             <option value={PricingModel.STANDARD}>Standart Model</option>
+                             <option value={PricingModel.TIERED}>Kademeli Model</option>
+                         </select>
+                     )}
+                 </div>
+                 {formData.hasSecondaryModel && renderPricingFields(
+                     'secondary', 
+                     formData.secondaryPricingModel || PricingModel.STANDARD, 
+                     formData.secondaryTiers || [], 
+                     handleAddSecTier, 
+                     removeSecTier, 
+                     newSecTier, 
+                     setNewSecTier
+                 )}
              </div>
 
           </div>
 
         </div>
 
-        <div className="mt-8 pt-6 border-t border-slate-700 flex justify-end">
-          <button type="submit" className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-8 rounded-lg transition-all shadow-lg hover:shadow-blue-600/30">
-            <Save className="w-5 h-5" />
-            {isEditing ? 'Güncelle' : 'Kaydet'}
-          </button>
+        {/* FORM KAYDET BUTONU & AKSİYON ALANI */}
+        <div className="mt-8 pt-5 border-t border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="text-xs text-slate-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>Grup, vergi ve fiyatlandırma ayarları bu firma ve alt şubeleri için geçerli olacaktır.</span>
+            </div>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+                {isEditing && (
+                    <button 
+                        type="button" 
+                        onClick={handleCancelEdit} 
+                        className="flex-1 sm:flex-none px-5 py-2.5 rounded-lg border border-slate-600 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-semibold transition-colors"
+                    >
+                        Vazgeç
+                    </button>
+                )}
+                <button 
+                    type="submit" 
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 px-8 rounded-lg transition-all shadow-lg hover:shadow-blue-600/30 active:scale-95 text-sm"
+                >
+                    <Save className="w-4 h-4" />
+                    <span>{isEditing ? 'Değişiklikleri Güncelle' : 'Firmayı Kaydet'}</span>
+                </button>
+            </div>
         </div>
       </form>
 
@@ -873,6 +1110,16 @@ const FirmRegistration = () => {
                      {firmGroups.map(g => <option key={g} value={g}>{g}</option>)}
                      <option value="UNGROUPED">Grupsuz Firmalar</option>
                  </select>
+
+                 <button
+                     type="button"
+                     onClick={() => setIsGroupModalOpen(true)}
+                     className="bg-slate-700 hover:bg-slate-600 text-slate-200 hover:text-white px-2.5 py-2 rounded-lg text-xs flex items-center gap-1.5 border border-slate-600 transition-colors shadow-sm"
+                     title="Firma Gruplarını Düzenle (⚙️)"
+                 >
+                     <Settings className="w-3.5 h-3.5 text-amber-400" />
+                     <span>Grupları Yönet</span>
+                 </button>
 
                  {/* Arama Kutusu */}
                  <div className="relative flex-1 md:w-48">
@@ -993,6 +1240,16 @@ const FirmRegistration = () => {
             </table>
         </div>
       </div>
+
+      {/* Firma Grupları Yönetim Modalı */}
+      <GroupManagerModal
+          isOpen={isGroupModalOpen}
+          onClose={() => setIsGroupModalOpen(false)}
+          onGroupsUpdated={() => {
+              setFirmGroups(db.getFirmGroups());
+              setExistingFirms(db.getFirms());
+          }}
+      />
     </div>
   );
 };
