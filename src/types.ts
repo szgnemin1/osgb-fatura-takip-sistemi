@@ -89,6 +89,7 @@ export interface Transaction {
   date: string;
   type: TransactionType;
   invoiceType?: InvoiceType;
+  category?: string;
   description: string;
   debt: number;
   credit: number;
@@ -100,12 +101,17 @@ export interface Transaction {
   bankName?: string;
   chequeStatus?: ChequeStatus;
   calculatedDetails?: {
-    employeeCount: number;
-    extraItemAmount: number;
-    expertShare: number;
-    doctorShare: number;
+    employeeCount?: number;
+    extraItemAmount?: number;
+    expertShare?: number;
+    doctorShare?: number;
     serviceAmount?: number;
     yearlyFeeAmount?: number;
+    isHealthOnlyInvoice?: boolean;
+    healthTotal?: number;
+    healthCount?: number;
+    externalHealthRecordIds?: string[];
+    recordsSummary?: any[];
   };
 }
 

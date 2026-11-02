@@ -263,14 +263,18 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
         // Firmaları ID ve İsim bazlı eşleme için yükle
         const fRows = await db.all("SELECT id, data FROM firms");
         const firmNameMap = new Map();
+        const validFirmIds = new Set();
+        const firmsList = [];
         for (const fr of fRows) {
             try {
                 const f = JSON.parse(fr.data);
+                validFirmIds.add(f.id);
+                firmsList.push(f);
                 if (f.name) firmNameMap.set(f.name.trim().toLowerCase(), f.id);
             } catch (_) {}
         }
 
-        // Varsa önceden kaydedilmiş özel eşleştirmeler
+        // Varsa önceden kaydedilmiş özel eşleştirmeler (Kalıcı Eşleştirme Hafızası)
         const mappingRows = await db.all("SELECT tetkik_name, target_firm_id FROM tetkik_firm_mappings");
         const mappingMap = new Map();
         for (const mr of mappingRows) {
@@ -287,15 +291,33 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
         for (const ref of invoiceReferrals) {
             const existingRow = await db.get(`SELECT id, data FROM external_health WHERE data LIKE ?`, `%"referralId":"${ref.id}"%`);
             const compName = (ref.employee?.company || '').trim();
-            const matchedFirmId = ref.companyId || (ref.employee && ref.employee.companyId) || mappingMap.get(compName) || firmNameMap.get(compName.toLowerCase()) || undefined;
-            const refDate = new Date(ref.referralDate || Date.now());
 
-            // Eğer eşleşen firmanın bu sevk tarihinden sonra/eşit kesilmiş faturası varsa geçmişte faturalandırılmış sayılır
-            let isBilled = false;
-            if (matchedFirmId && firmLastInvoiceMap.has(matchedFirmId)) {
-                const lastDate = firmLastInvoiceMap.get(matchedFirmId);
-                if (lastDate && lastDate >= refDate) {
-                    isBilled = true;
+            // 1. Önce kayıtlı kalıcı eşleştirme hafızası (mappingMap)
+            let matchedFirmId = mappingMap.get(compName);
+
+            // 2. Yoksa birebir unvan eşleşmesi (küçük harf duyarsız)
+            if (!matchedFirmId && compName) {
+                matchedFirmId = firmNameMap.get(compName.toLowerCase());
+            }
+
+            // 3. Yoksa şirket unvan ekleri temizlenerek akıllı eşleşme (Ltd, Şti, A.Ş. vb.)
+            if (!matchedFirmId && compName) {
+                const cleanComp = compName.toLowerCase().replace(/ltd\.?|şti\.?|a\.?ş\.?|tic\.?|san\.?/gi, '').replace(/[^a-z0-9ğüşıöç]/gi, '').trim();
+                for (const f of firmsList) {
+                    const cleanFirm = (f.name || '').toLowerCase().replace(/ltd\.?|şti\.?|a\.?ş\.?|tic\.?|san\.?/gi, '').replace(/[^a-z0-9ğüşıöç]/gi, '').trim();
+                    if (cleanComp && cleanFirm && (cleanComp === cleanFirm || cleanComp.includes(cleanFirm) || cleanFirm.includes(cleanComp))) {
+                        matchedFirmId = f.id;
+                        break;
+                    }
+                }
+            }
+
+            // 4. ref.companyId ancak Fatura Takip sistemindeki geçerli bir firmaya aitse kabul edilir
+            if (!matchedFirmId) {
+                if (ref.companyId && validFirmIds.has(ref.companyId)) {
+                    matchedFirmId = ref.companyId;
+                } else if (ref.employee?.companyId && validFirmIds.has(ref.employee.companyId)) {
+                    matchedFirmId = ref.employee.companyId;
                 }
             }
 
@@ -308,9 +330,9 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
                     exams: ref.exams || [],
                     amount: Number(ref.totalPrice) || 0,
                     date: ref.referralDate || new Date().toISOString(),
-                    isBilled: isBilled,
+                    isBilled: false,
                     referralId: ref.id,
-                    matchedFirmId: matchedFirmId
+                    matchedFirmId: matchedFirmId || undefined
                 };
                 await insertStmt.run(newId, JSON.stringify(item));
                 syncedCount++;
@@ -327,8 +349,9 @@ async function reconcileWithTetkik(startDateStr = null, endDateStr = null, purge
                     changed = true;
                 }
                 // Eşleştirme tablosundaki güncel ID'yi yansıt
-                if (existingData.matchedFirmId !== matchedFirmId) {
-                    existingData.matchedFirmId = matchedFirmId;
+                const targetMatched = matchedFirmId || undefined;
+                if (existingData.matchedFirmId !== targetMatched) {
+                    existingData.matchedFirmId = targetMatched;
                     changed = true;
                 }
 
@@ -2155,36 +2178,31 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
 
         // Fatura Takip firmalarını çek
         const fRows = await db.all("SELECT id, data FROM firms");
+        const firmNameMap = new Map();
         const faturaFirms = fRows.map(r => {
-            try { return JSON.parse(r.data); } catch (_) { return null; }
+            try { 
+                const parsed = JSON.parse(r.data);
+                if (parsed.name) firmNameMap.set(parsed.name.trim().toLowerCase(), parsed.id);
+                return parsed;
+            } catch (_) { return null; }
         }).filter(Boolean).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'tr'));
 
-        // Tetkik firmalarını topla
-        const compMap = new Map();
-
-        // 1. Tetkik sisteminde kayıtlı şirketler
+        // Tetkik şirketleri metadata haritası
+        const tetkikMetaMap = new Map();
         for (const c of tetkikCompanies) {
-            const name = (c.name || '').trim();
-            if (!name) continue;
-            compMap.set(name, {
-                id: c.id,
-                name: name,
-                hazardClass: c.hazardClass || '-',
-                doctor: c.assignedDoctor || '-',
-                specialist: c.assignedSpecialist || '-',
-                totalReferrals: 0,
-                totalAmount: 0,
-                unbilledReferrals: 0,
-                unbilledAmount: 0,
-                matchedFirmId: mappingMap.get(name) || ''
-            });
+            const cName = (c.name || '').trim();
+            if (cName) tetkikMetaMap.set(cName, c);
         }
 
-        // 2. Sevklerden gelen şirketler ve istatistikler (Tarih Aralıklı)
+        // Sevklerden SADECE faturalı (paymentMethod === 'INVOICE') olanları topla
+        // Faturasız (CASH / POS) kayıtlar ve sevki olmayan firmalar ASLA dahil edilmez!
+        const compMap = new Map();
         let totalInRange = 0;
         let totalAmountInRange = 0;
 
         for (const ref of referrals) {
+            if (!ref || ref.paymentMethod !== 'INVOICE' || ref.isExternalRecord) continue;
+
             const compName = (ref.employee?.company || '').trim();
             if (!compName) continue;
 
@@ -2196,17 +2214,23 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
             }
 
             if (!compMap.has(compName)) {
+                const meta = tetkikMetaMap.get(compName) || {};
+                let matchedId = mappingMap.get(compName) || '';
+                if (!matchedId) {
+                    matchedId = firmNameMap.get(compName.toLowerCase()) || '';
+                }
+
                 compMap.set(compName, {
-                    id: 'ref_' + compName,
+                    id: meta.id || ('ref_' + compName),
                     name: compName,
-                    hazardClass: '-',
-                    doctor: '-',
-                    specialist: '-',
+                    hazardClass: meta.hazardClass || '-',
+                    doctor: meta.assignedDoctor || '-',
+                    specialist: meta.assignedSpecialist || '-',
                     totalReferrals: 0,
                     totalAmount: 0,
                     unbilledReferrals: 0,
                     unbilledAmount: 0,
-                    matchedFirmId: mappingMap.get(compName) || ''
+                    matchedFirmId: matchedId
                 });
             }
 
@@ -2215,15 +2239,13 @@ app.get('/api/tetkik/companies', authenticateToken, async (req, res) => {
             const price = Number(ref.totalPrice) || 0;
             item.totalAmount += price;
 
-            if (ref.paymentMethod === 'INVOICE' && !ref.isExternalRecord) {
-                item.unbilledReferrals++;
-                item.unbilledAmount += price;
-                totalInRange++;
-                totalAmountInRange += price;
-            }
+            item.unbilledReferrals++;
+            item.unbilledAmount += price;
+            totalInRange++;
+            totalAmountInRange += price;
         }
 
-        const companiesList = Array.from(compMap.values()).sort((a, b) => {
+        const companiesList = Array.from(compMap.values()).filter(c => c.unbilledReferrals > 0).sort((a, b) => {
             if (b.unbilledAmount !== a.unbilledAmount) {
                 return b.unbilledAmount - a.unbilledAmount;
             }
