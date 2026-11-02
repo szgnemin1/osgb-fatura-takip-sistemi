@@ -710,11 +710,17 @@ const Invoices: React.FC = () => {
                 <tbody className="divide-y divide-slate-800/60">
                   {filteredPending.map(inv => {
                     const firm = firms.find(f => f.id === inv.firmId);
-                    let expertVal = inv.calculatedDetails?.expertShare || 0;
-                    let doctorVal = inv.calculatedDetails?.doctorShare || 0;
-                    let healthVal = inv.calculatedDetails?.extraItemAmount || 0;
+                    const isHealthInvoice = inv.category === 'HEALTH_EXAM' || 
+                                           inv.calculatedDetails?.isHealthOnlyInvoice || 
+                                           (inv.description && inv.description.toLowerCase().includes('sağlık tetkik'));
 
-                    if (expertVal === 0 && doctorVal === 0 && firm) {
+                    let expertVal = isHealthInvoice ? 0 : (inv.calculatedDetails?.expertShare || 0);
+                    let doctorVal = isHealthInvoice ? 0 : (inv.calculatedDetails?.doctorShare || 0);
+                    let healthVal = isHealthInvoice 
+                      ? (inv.calculatedDetails?.extraItemAmount || inv.debt) 
+                      : (inv.calculatedDetails?.extraItemAmount || 0);
+
+                    if (!isHealthInvoice && expertVal === 0 && doctorVal === 0 && firm) {
                       let eRate = firm.expertPercentage;
                       let dRate = firm.doctorPercentage;
 
@@ -952,11 +958,17 @@ const Invoices: React.FC = () => {
             <div className="md:hidden flex-1 overflow-y-auto p-2 space-y-2 bg-slate-950/40">
               {filteredPending.map(inv => {
                 const firm = firms.find(f => f.id === inv.firmId);
-                let expertVal = inv.calculatedDetails?.expertShare || 0;
-                let doctorVal = inv.calculatedDetails?.doctorShare || 0;
-                let healthVal = inv.calculatedDetails?.extraItemAmount || 0;
+                const isHealthInvoice = inv.category === 'HEALTH_EXAM' || 
+                                       inv.calculatedDetails?.isHealthOnlyInvoice || 
+                                       (inv.description && inv.description.toLowerCase().includes('sağlık tetkik'));
 
-                if (expertVal === 0 && doctorVal === 0 && firm) {
+                let expertVal = isHealthInvoice ? 0 : (inv.calculatedDetails?.expertShare || 0);
+                let doctorVal = isHealthInvoice ? 0 : (inv.calculatedDetails?.doctorShare || 0);
+                let healthVal = isHealthInvoice 
+                  ? (inv.calculatedDetails?.extraItemAmount || inv.debt) 
+                  : (inv.calculatedDetails?.extraItemAmount || 0);
+
+                if (!isHealthInvoice && expertVal === 0 && doctorVal === 0 && firm) {
                   let eRate = firm.expertPercentage;
                   let dRate = firm.doctorPercentage;
                   const vatExpert = globalSettings?.vatRateExpert ?? 20;

@@ -48,6 +48,9 @@ const Preparation = () => {
   const [showUnmatchedHealthModal, setShowUnmatchedHealthModal] = useState(false);
   const [selectedHealthMapping, setSelectedHealthMapping] = useState<Record<string, string>>({});
 
+  // Sevk Tablosunda Kullanıcı Tarafından Düzenlenen Tutarlar (Firma ID -> Belirlenen Tutar)
+  const [customTetkikAmounts, setCustomTetkikAmounts] = useState<Record<string, number>>({});
+
   // Sevk Aktarım Tarih & İşlem State'leri
   const [tetkikStartDate, setTetkikStartDate] = useState(() => {
     const now = new Date();
@@ -260,16 +263,23 @@ const Preparation = () => {
     });
 
     const list = Array.from(map.values()).map(item => {
+      const originalSubtotal = item.subtotal;
+      const effectiveSubtotal = customTetkikAmounts[item.firm.id] !== undefined
+        ? customTetkikAmounts[item.firm.id]
+        : originalSubtotal;
       const kdvRate = 0.20;
-      const grandTotal = item.firm.isKdvExcluded ? item.subtotal * (1 + kdvRate) : item.subtotal;
+      const grandTotal = item.firm.isKdvExcluded ? effectiveSubtotal * (1 + kdvRate) : effectiveSubtotal;
       return {
         ...item,
+        originalSubtotal,
+        subtotal: effectiveSubtotal,
+        isCustomAmount: customTetkikAmounts[item.firm.id] !== undefined,
         grandTotal: Math.round(grandTotal * 100) / 100
       };
     });
 
     return list.sort((a, b) => b.grandTotal - a.grandTotal);
-  }, [firms, unmatchedHealthRecords]);
+  }, [firms, unmatchedHealthRecords, customTetkikAmounts]);
 
   const filteredTetkikFirms = React.useMemo(() => {
     return tetkikFirmsToBill.filter(item => {
@@ -1131,7 +1141,7 @@ const Preparation = () => {
     const currentMonth = date.getMonth() + 1;
     const currentYear = date.getFullYear();
     const monthName = months[currentMonth - 1];
-    const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli (${records.length} Sevk) - ${monthName} ${currentYear}`;
+    const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli - ${monthName} ${currentYear}`;
     const billedExtIds = records.map(r => r.id);
 
     await db.addTransaction({
@@ -1154,7 +1164,7 @@ const Preparation = () => {
         serviceAmount: 0,
         isHealthOnlyInvoice: true,
         healthTotal: subtotal,
-        healthCount: records.length,
+        healthCount: 0,
         externalHealthRecordIds: billedExtIds,
         recordsSummary: records.map(r => ({
           id: r.id,
@@ -1189,7 +1199,7 @@ const Preparation = () => {
 
     filteredTetkikFirms.forEach(item => {
       const { firm, records, subtotal, grandTotal } = item;
-      const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli (${records.length} Sevk) - ${monthName} ${currentYear}`;
+      const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli - ${monthName} ${currentYear}`;
       const recordIds = records.map(r => r.id);
 
       newTransactions.push({
@@ -1212,7 +1222,7 @@ const Preparation = () => {
           serviceAmount: 0,
           isHealthOnlyInvoice: true,
           healthTotal: subtotal,
-          healthCount: records.length,
+          healthCount: 0,
           externalHealthRecordIds: recordIds,
           recordsSummary: records.map(r => ({
             id: r.id,
@@ -1800,17 +1810,16 @@ const Preparation = () => {
                 <thead className="bg-slate-900 border-b border-slate-700 text-[10px] sm:text-xs uppercase tracking-wider text-slate-400 font-semibold">
                   <tr>
                     <th className="py-3 px-4">Firma Adı & Grubu</th>
-                    <th className="py-3 px-4 text-center w-28">Sevk Sayısı</th>
                     <th className="py-3 px-4">Yapılan Tetkikler Özeti</th>
                     <th className="py-3 px-4 text-center w-28">Fatura Tipi</th>
-                    <th className="py-3 px-4 text-right w-36">Net Tutar</th>
+                    <th className="py-3 px-4 text-right w-44">Hizmet Tutarı (TL)</th>
                     <th className="py-3 px-4 text-right w-36">Fatura Tutarı (TL)</th>
                     <th className="py-3 px-4 text-center w-36">İşlemler</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-700 text-sm">
                   {filteredTetkikFirms.map((item) => {
-                    const { firm, records, subtotal, grandTotal, examsSummary } = item;
+                    const { firm, subtotal, grandTotal, examsSummary, isCustomAmount, originalSubtotal } = item;
                     const examsList = Object.entries(examsSummary);
 
                     return (
@@ -1833,12 +1842,6 @@ const Preparation = () => {
                                 </span>
                               )}
                             </div>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-900 text-slate-200 border border-slate-700 font-mono font-bold text-xs">
-                            <Users className="w-3.5 h-3.5 text-blue-400" />
-                            <span>{records.length} Sevk</span>
                           </div>
                         </td>
                         <td className="py-3 px-4">
@@ -1865,11 +1868,51 @@ const Preparation = () => {
                             {firm.defaultInvoiceType || 'E-Arşiv'}
                           </span>
                         </td>
-                        <td className="py-3 px-4 text-right font-mono text-slate-300">
-                          {formatCurrency(subtotal)}
-                          {firm.isKdvExcluded && (
-                            <div className="text-[10px] text-slate-500">+ %20 KDV</div>
-                          )}
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex flex-col items-end gap-1">
+                            <div className="relative flex items-center">
+                              <span className="absolute left-2.5 text-slate-400 text-xs font-mono select-none">₺</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={subtotal}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value);
+                                  setCustomTetkikAmounts(prev => ({
+                                    ...prev,
+                                    [firm.id]: isNaN(val) ? 0 : val
+                                  }));
+                                }}
+                                className="w-32 bg-slate-900/90 border border-slate-600 focus:border-emerald-500 rounded-lg pl-6 pr-2 py-1.5 text-right font-mono text-sm font-bold text-slate-100 outline-none focus:ring-1 focus:ring-emerald-500 transition-all"
+                                title="Bu firma için kesilecek hizmet tutarını doğrudan düzenleyebilirsiniz"
+                              />
+                            </div>
+                            {isCustomAmount && (
+                              <div className="flex items-center gap-1.5 text-[10px]">
+                                <span className="text-amber-400/90 font-mono">
+                                  Asıl: ₺{originalSubtotal.toLocaleString('tr-TR')}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCustomTetkikAmounts(prev => {
+                                      const next = { ...prev };
+                                      delete next[firm.id];
+                                      return next;
+                                    });
+                                  }}
+                                  className="text-slate-400 hover:text-red-400 underline font-medium"
+                                  title="Orijinal sevk tutarına sıfırla"
+                                >
+                                  Sıfırla
+                                </button>
+                              </div>
+                            )}
+                            {firm.isKdvExcluded && (
+                              <div className="text-[10px] text-slate-500">+ %20 KDV</div>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 text-right">
                           <span className="font-mono font-bold text-emerald-400 text-base">
@@ -1902,7 +1945,7 @@ const Preparation = () => {
                   })}
                   {filteredTetkikFirms.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="p-12 text-center">
+                      <td colSpan={6} className="p-12 text-center">
                         <div className="flex flex-col items-center justify-center gap-2 text-slate-400">
                           <CheckCircle2 className="w-10 h-10 text-emerald-500/60" />
                           <span className="text-sm font-semibold text-slate-200">
@@ -2260,7 +2303,7 @@ const Preparation = () => {
                   Toplam: <b className="text-white font-mono">{selectedTetkikDetailFirm.records.length} Sevk</b>
                 </span>
                 <span className="text-xs text-slate-400">
-                  Fatura Tutarı: <b className="text-emerald-400 font-mono text-base">{formatCurrency(selectedTetkikDetailFirm.grandTotal)}</b>
+                  Fatura Tutarı: <b className="text-emerald-400 font-mono text-base">{formatCurrency(tetkikFirmsToBill.find(tf => tf.firm.id === selectedTetkikDetailFirm.firm.id)?.grandTotal ?? selectedTetkikDetailFirm.grandTotal)}</b>
                 </span>
               </div>
               <div className="flex items-center gap-2">
