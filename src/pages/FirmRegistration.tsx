@@ -702,6 +702,13 @@ const FirmRegistration = () => {
                     </div>
 
                     <div className="col-span-1">
+                        <label className="block text-xs font-medium text-blue-400 mb-1 flex items-center gap-1.5">
+                            <span>Yetkili E-Posta (Mutabakat)</span>
+                        </label>
+                        <input type="email" name="email" value={formData.email || ''} onChange={handleChange} placeholder="muhasebe@firma.com" className="w-full bg-slate-900 border border-blue-500/40 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
+                    </div>
+
+                    <div className="col-span-1">
                         <label className="block text-xs font-medium text-slate-300 mb-1">Yetkili / Muhasebe İlgilisi</label>
                         <input type="text" name="contactPerson" value={formData.contactPerson || ''} onChange={handleChange} placeholder="İsim / Unvan" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
                     </div>

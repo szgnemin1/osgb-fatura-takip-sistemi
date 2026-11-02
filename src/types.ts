@@ -179,7 +179,7 @@ export interface TelegramAllowedUser {
   created_at: string;
 }
 
-// --- CARİ MUTABAKAT & WHATSAPP TİPLERİ ---
+// --- CARİ MUTABAKAT & ÇOKLU KANAL (WHATSAPP + E-POSTA) TİPLERİ ---
 export type ReconciliationStatus = 'PENDING_SEND' | 'SENT' | 'APPROVED' | 'DISPUTED';
 
 export interface ReconciliationItem {
@@ -192,6 +192,8 @@ export interface ReconciliationItem {
   total_paid: number;
   status: ReconciliationStatus;
   phone: string;
+  email?: string;
+  sent_channels?: 'WHATSAPP' | 'EMAIL' | 'BOTH' | null;
   token: string;
   sent_at?: string;
   response_at?: string;
@@ -201,6 +203,28 @@ export interface ReconciliationItem {
   client_ip?: string;
   created_at: string;
   updated_at?: string;
+}
+
+export interface ReconciliationStats {
+  total: number;
+  sent: number;
+  approved: number;
+  disputed: number;
+  pending: number;
+  hasPhone: number;
+  hasEmail: number;
+  hasBoth: number;
+  missingContact: number;
+}
+
+export interface SmtpConfig {
+  configured?: boolean;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  from_address: string;
 }
 
 export interface WhatsAppStatus {

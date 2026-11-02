@@ -16,6 +16,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { jsPDF } = require('jspdf');
 require('jspdf-autotable');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -430,6 +431,34 @@ async function createDatabaseBackup() {
     await db.run('CREATE INDEX IF NOT EXISTS idx_rec_period ON reconciliations(period);');
     await db.run('CREATE INDEX IF NOT EXISTS idx_rec_token ON reconciliations(token);');
     await db.run('CREATE INDEX IF NOT EXISTS idx_rec_firm ON reconciliations(firm_id);');
+
+    // SMTP Ayarları Tablosu
+    await db.run(`CREATE TABLE IF NOT EXISTS smtp_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        host TEXT,
+        port INTEGER DEFAULT 587,
+        secure INTEGER DEFAULT 0,
+        user TEXT,
+        pass TEXT,
+        from_address TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    );`);
+
+    // Reconciliations Tablosu Migrasyonları (email ve sent_channels)
+    try {
+        const recCols = await db.all("PRAGMA table_info(reconciliations);");
+        const recColNames = recCols.map(c => c.name);
+        if (!recColNames.includes('email')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN email TEXT;");
+        }
+        if (!recColNames.includes('sent_channels')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN sent_channels TEXT;");
+        }
+    } catch (migErr) {
+        console.error("Reconciliations migration hatası:", migErr);
+    }
+
     console.log("SQLite Veritabanına Bağlanıldı (Çoklu Kullanıcı WAL Modu & Güvenlik Denetim Tablosu Aktif).");
 
     // users.json içindeki 2FA gizli anahtarlarını AES-256-GCM ile şifrele (Migration)
@@ -3585,6 +3614,378 @@ app.post('/api/whatsapp/disconnect', authenticateToken, requireAdmin, async (req
     }
 });
 
+// =========================================================================
+// SMTP / E-POSTA SERVİSİ (NODEMAILER)
+// =========================================================================
+
+async function getSmtpSettings() {
+    if (!db) return null;
+    return await db.get("SELECT * FROM smtp_settings WHERE id = 1");
+}
+
+function createMailTransporter(settings) {
+    if (!settings || !settings.host || !settings.user) return null;
+    return nodemailer.createTransport({
+        host: settings.host,
+        port: Number(settings.port) || 587,
+        secure: Number(settings.secure) === 1 || Number(settings.port) === 465,
+        auth: {
+            user: settings.user,
+            pass: settings.pass
+        },
+        tls: {
+            rejectUnauthorized: false
+        }
+    });
+}
+
+async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename) {
+    const smtp = await getSmtpSettings();
+    if (!smtp || !smtp.host || !smtp.user) {
+        throw new Error('E-posta (SMTP) sunucu ayarları yapılandırılmamış. Lütfen SMTP Ayarları menüsünden bilgilerinizi kaydedin.');
+    }
+
+    const targetEmail = (rec.email || firm.email || '').trim();
+    if (!targetEmail || !targetEmail.includes('@')) {
+        throw new Error(`"${firm.name}" firmasına ait geçerli bir e-posta adresi bulunamadı.`);
+    }
+
+    const transporter = createMailTransporter(smtp);
+    if (!transporter) {
+        throw new Error('E-posta bağlantısı kurulamadı. Lütfen SMTP ayarlarını kontrol ediniz.');
+    }
+
+    const balanceNum = Number(rec.balance) || 0;
+    const balanceFormatted = Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 });
+    let statusLabel = '0.00 TL (Hesabımız Denktir)';
+    let statusColor = '#475569';
+    let statusBg = '#f8fafc';
+
+    if (balanceNum > 0) {
+        statusLabel = `${balanceFormatted} TL BORÇLU (Şirketimize Ödenmesi Gereken)`;
+        statusColor = '#e11d48';
+        statusBg = '#fff1f2';
+    } else if (balanceNum < 0) {
+        statusLabel = `${balanceFormatted} TL ALACAKLI (Şirketimizden Alacağınız)`;
+        statusColor = '#059669';
+        statusBg = '#ecfdf5';
+    }
+
+    const approveLink = `${approvalUrl}?action=approve`;
+    const disputeLink = `${approvalUrl}?action=dispute`;
+    const pdfLink = `${approvalUrl}/pdf`;
+
+    const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="tr">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cari Hesap Mutabakat Mektubu</title>
+    </head>
+    <body style="margin: 0; padding: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #334155;">
+        <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 620px; margin: 30px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.25);">
+            <!-- Üst Başlık -->
+            <tr>
+                <td style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); padding: 32px 28px; text-align: center; border-bottom: 4px solid #3b82f6;">
+                    <div style="font-size: 12px; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">
+                        🛡️ OSGB ProFinans Cari Yönetimi
+                    </div>
+                    <h1 style="color: #ffffff; margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">
+                        Cari Hesap Mutabakat Formu
+                    </h1>
+                    <div style="color: #94a3b8; font-size: 12px; margin-top: 6px;">
+                        Dönem: <strong>${escapeHtml(rec.period)}</strong> &bull; Tarih: <strong>${new Date().toLocaleDateString('tr-TR')}</strong>
+                    </div>
+                </td>
+            </tr>
+
+            <!-- Gövde -->
+            <tr>
+                <td style="padding: 32px 28px;">
+                    <p style="font-size: 15px; color: #1e293b; margin: 0 0 16px; font-weight: 700;">
+                        Sayın Yetkili (<strong>${escapeHtml(firm.name || 'Değerli Müşterimiz')}</strong>),
+                    </p>
+                    <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 24px;">
+                        Şirketimiz nezdindeki muhasebe ve cari hesap kayıtlarımıza göre <strong>${escapeHtml(rec.period)}</strong> dönemi sonu itibariyle bakiyeniz aşağıda ve ekteki resmi onaylı PDF ekstre belgesinde yer almaktadır:
+                    </p>
+
+                    <!-- Finansal Kart -->
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: ${statusBg}; border: 1px solid ${statusColor}40; border-radius: 12px; margin-bottom: 26px;">
+                        <tr>
+                            <td style="padding: 22px; text-align: center;">
+                                <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">
+                                    KAYITLARIMIZDAKİ BAKİYE
+                                </div>
+                                <div style="font-size: 32px; font-weight: 800; color: ${statusColor}; font-family: 'Courier New', monospace; letter-spacing: -1px; margin-bottom: 4px;">
+                                    ${balanceFormatted} TL
+                                </div>
+                                <div style="font-size: 13px; font-weight: 700; color: ${statusColor};">
+                                    ${statusLabel}
+                                </div>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p style="font-size: 13.5px; line-height: 1.5; color: #475569; margin: 0 0 20px; text-align: center;">
+                        Lütfen muhasebe kayıtlarınızı inceleyerek aşağıdaki seçeneklerden birini tıklayarak durumunuzu bildiriniz:
+                    </p>
+
+                    <!-- Aksiyon Butonları -->
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+                        <tr>
+                            <td align="center" style="padding-bottom: 12px;">
+                                <a href="${approveLink}" target="_blank" style="display: block; width: 85%; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 14px 20px; border-radius: 10px; font-weight: 700; font-size: 14px; text-align: center; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);">
+                                    ✅ Kayıtlarımız Mutabıktır (Onayla)
+                                </a>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="center" style="padding-bottom: 12px;">
+                                <a href="${disputeLink}" target="_blank" style="display: block; width: 85%; background-color: #f43f5e; color: #ffffff; text-decoration: none; padding: 14px 20px; border-radius: 10px; font-weight: 700; font-size: 14px; text-align: center; box-shadow: 0 4px 12px rgba(244, 63, 94, 0.25);">
+                                    ❌ Fark Var / İtiraz Bildir
+                                </a>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="center">
+                                <a href="${pdfLink}" target="_blank" style="display: inline-block; background-color: #f1f5f9; color: #334155; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: 600; font-size: 12.5px; border: 1px solid #cbd5e1;">
+                                    📄 Resmi Mutabakat Mektubunu İncele (PDF)
+                                </a>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <!-- Bilgi Notu -->
+                    <div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 4px; font-size: 12px; color: #1e40af; line-height: 1.5;">
+                        📌 <strong>Ek Dosya:</strong> Ayrıntılı cari hesap hareket dökümünüz bu e-postanın ekinde <strong>${escapeHtml(filename)}</strong> adıyla yer almaktadır.
+                    </div>
+                </td>
+            </tr>
+
+            <!-- Alt Bilgi -->
+            <tr>
+                <td style="background-color: #f8fafc; padding: 20px 28px; text-align: center; border-top: 1px solid #e2e8f0; font-size: 11.5px; color: #94a3b8; line-height: 1.6;">
+                    Bu e-posta <strong>OSGB Fatura & Cari Yönetim Sistemi</strong> tarafından otomatik iletilmiştir.<br>
+                    Tüm hakları saklıdır &bull; &copy; ${new Date().getFullYear()} OSGB Finans & Muhasebe
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    `;
+
+    const fromAddress = smtp.from_address || `"OSGB ProFinans" <${smtp.user}>`;
+
+    const mailOptions = {
+        from: fromAddress,
+        to: targetEmail,
+        subject: `Cari Hesap Mutabakat Mektubu - ${rec.period} - ${firm.name}`,
+        html: htmlContent,
+        attachments: [
+            {
+                filename: filename,
+                content: pdfBuffer,
+                contentType: 'application/pdf'
+            }
+        ]
+    };
+
+    return await transporter.sendMail(mailOptions);
+}
+
+// Birleşik Çoklu Kanal Gönderim Fonksiyonu (WhatsApp + E-Posta)
+async function dispatchReconciliationItem(rec, req) {
+    const firm = await getFirmById(rec.firm_id);
+    if (!firm) throw new Error('Firma kaydı bulunamadı.');
+
+    const targetPhone = formatPhoneForWhatsApp(rec.phone || firm.phone);
+    const targetEmail = ((rec.email || firm.email || '')).trim();
+
+    const hasPhone = Boolean(targetPhone);
+    const hasEmail = Boolean(targetEmail && targetEmail.includes('@'));
+
+    if (!hasPhone && !hasEmail) {
+        throw new Error(`"${firm.name}" firmasına ait ne telefon ne de e-posta adresi kayıtlı.`);
+    }
+
+    // PDF Üret
+    const transactions = await getTransactionsForFirm(rec.firm_id);
+    const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
+    const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
+
+    const baseUrl = getBaseUrl(req);
+    const approvalUrl = `${baseUrl}/mutabakat/${rec.token}`;
+
+    const sentChannelsList = [];
+    const errors = [];
+
+    // 1. WhatsApp Gönderimi (Eğer telefon varsa)
+    if (hasPhone) {
+        if (isWaConnected && waSocket) {
+            try {
+                const caption = buildReconciliationCaption(firm, rec, approvalUrl);
+                const jid = `${targetPhone}@s.whatsapp.net`;
+                await waSocket.sendMessage(jid, {
+                    document: pdfBuffer,
+                    mimetype: 'application/pdf',
+                    fileName: filename,
+                    caption: caption
+                });
+                sentChannelsList.push('WHATSAPP');
+            } catch (waErr) {
+                console.error(`WhatsApp gönderim hatası (${targetPhone}):`, waErr.message);
+                errors.push(`WhatsApp: ${waErr.message}`);
+            }
+        } else {
+            errors.push('WhatsApp bağlı değil.');
+        }
+    }
+
+    // 2. E-Posta Gönderimi (Eğer e-posta varsa)
+    if (hasEmail) {
+        try {
+            await sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename);
+            sentChannelsList.push('EMAIL');
+        } catch (mailErr) {
+            console.error(`E-posta gönderim hatası (${targetEmail}):`, mailErr.message);
+            errors.push(`E-Posta: ${mailErr.message}`);
+        }
+    }
+
+    if (sentChannelsList.length === 0) {
+        throw new Error(`Gönderim yapılamadı: ${errors.join(', ')}`);
+    }
+
+    let channelCode = 'WHATSAPP';
+    if (sentChannelsList.includes('WHATSAPP') && sentChannelsList.includes('EMAIL')) {
+        channelCode = 'BOTH';
+    } else if (sentChannelsList.includes('EMAIL')) {
+        channelCode = 'EMAIL';
+    }
+
+    const now = new Date().toISOString();
+    await db.run(
+        "UPDATE reconciliations SET status = 'SENT', sent_at = ?, sent_channels = ?, updated_at = ? WHERE id = ?",
+        [now, channelCode, now, rec.id]
+    );
+
+    await logAuditEvent(req, 'RECONCILIATION_SENT', {
+        firmId: rec.firm_id,
+        channels: sentChannelsList,
+        phone: hasPhone ? targetPhone : null,
+        email: hasEmail ? targetEmail : null
+    }, 'SUCCESS');
+
+    return {
+        success: true,
+        sentChannels: channelCode,
+        channelsList: sentChannelsList,
+        warnings: errors.length > 0 ? errors.join(' | ') : null
+    };
+}
+
+// SMTP Ayarlarını Getir
+app.get('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const smtp = await getSmtpSettings();
+        if (!smtp) {
+            return res.json({
+                configured: false,
+                host: '',
+                port: 587,
+                secure: false,
+                user: '',
+                pass: '',
+                from_address: ''
+            });
+        }
+        res.json({
+            configured: Boolean(smtp.host && smtp.user),
+            host: smtp.host || '',
+            port: smtp.port || 587,
+            secure: Boolean(smtp.secure),
+            user: smtp.user || '',
+            pass: smtp.pass ? '********' : '',
+            from_address: smtp.from_address || ''
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'SMTP ayarları alınamadı: ' + e.message });
+    }
+});
+
+// SMTP Ayarlarını Kaydet
+app.post('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { host, port, secure, user, pass, from_address } = req.body;
+
+        const current = await getSmtpSettings();
+        const now = new Date().toISOString();
+        let finalPass = pass;
+        if ((!pass || pass === '********') && current && current.pass) {
+            finalPass = current.pass;
+        }
+
+        if (current) {
+            await db.run(
+                `UPDATE smtp_settings 
+                 SET host = ?, port = ?, secure = ?, user = ?, pass = ?, from_address = ?, updated_at = ? 
+                 WHERE id = 1`,
+                [host?.trim(), Number(port) || 587, secure ? 1 : 0, user?.trim(), finalPass, from_address?.trim(), now]
+            );
+        } else {
+            await db.run(
+                `INSERT INTO smtp_settings (id, host, port, secure, user, pass, from_address, created_at, updated_at) 
+                 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [host?.trim(), Number(port) || 587, secure ? 1 : 0, user?.trim(), finalPass, from_address?.trim(), now, now]
+            );
+        }
+
+        await logAuditEvent(req, 'SMTP_CONFIG_UPDATED', { host, user, port }, 'SUCCESS');
+        res.json({ success: true, message: 'SMTP ayarları başarıyla kaydedildi.' });
+    } catch (e) {
+        res.status(500).json({ error: 'SMTP ayarları kaydedilemedi: ' + e.message });
+    }
+});
+
+// Test E-Postası Gönder
+app.post('/api/smtp/test', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { toEmail } = req.body;
+        if (!toEmail || !toEmail.includes('@')) {
+            return res.status(400).json({ error: 'Geçerli bir test alıcı e-posta adresi giriniz.' });
+        }
+
+        const smtp = await getSmtpSettings();
+        if (!smtp || !smtp.host || !smtp.user) {
+            return res.status(400).json({ error: 'SMTP ayarları henüz yapılandırılmamış.' });
+        }
+
+        const transporter = createMailTransporter(smtp);
+        const fromAddress = smtp.from_address || `"OSGB Test" <${smtp.user}>`;
+
+        await transporter.sendMail({
+            from: fromAddress,
+            to: toEmail.trim(),
+            subject: 'OSGB ProFinans - SMTP Bağlantı Testi',
+            html: `
+                <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; max-width: 500px;">
+                    <h2 style="color: #059669; margin-top: 0;">✅ SMTP E-Posta Bağlantısı Başarılı!</h2>
+                    <p style="font-size: 14px; line-height: 1.5;">Bu test mesajı, OSGB Fatura & Cari Yönetim Sisteminizin e-posta (SMTP) ayarlarının eksiksiz çalıştığını doğrulamaktadır.</p>
+                    <p style="font-size: 12px; color: #64748b; margin-bottom: 0;">Tarih: ${new Date().toLocaleString('tr-TR')}</p>
+                </div>
+            `
+        });
+
+        res.json({ success: true, message: `Test e-postası başarıyla "${toEmail}" adresine iletildi.` });
+    } catch (e) {
+        console.error('SMTP test hatası:', e);
+        res.status(500).json({ error: 'Test e-postası gönderilemedi: ' + e.message });
+    }
+});
+
 // Mutabakat Verilerini Getir
 app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
     try {
@@ -3602,10 +4003,14 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
 
         const items = rows.map(r => {
             let firmName = 'Bilinmeyen Firma';
+            let firmEmail = '';
+            let firmPhone = '';
             try {
                 if (r.firm_data) {
                     const parsed = JSON.parse(r.firm_data);
                     firmName = parsed.name || firmName;
+                    firmEmail = parsed.email || '';
+                    firmPhone = parsed.phone || '';
                 }
             } catch (_) {}
 
@@ -3618,7 +4023,9 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
                 total_billed: r.total_billed,
                 total_paid: r.total_paid,
                 status: r.status,
-                phone: r.phone || '',
+                phone: r.phone || firmPhone,
+                email: r.email || firmEmail,
+                sent_channels: r.sent_channels || null,
                 token: r.token,
                 sent_at: r.sent_at,
                 response_at: r.response_at,
@@ -3637,7 +4044,10 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
             approved: items.filter(i => i.status === 'APPROVED').length,
             disputed: items.filter(i => i.status === 'DISPUTED').length,
             pending: items.filter(i => i.status === 'SENT').length,
-            missingPhone: items.filter(i => !i.phone || i.phone.trim().length < 10).length
+            hasPhone: items.filter(i => i.phone && i.phone.trim().length >= 10).length,
+            hasEmail: items.filter(i => i.email && i.email.includes('@')).length,
+            hasBoth: items.filter(i => (i.phone && i.phone.trim().length >= 10) && (i.email && i.email.includes('@'))).length,
+            missingContact: items.filter(i => (!i.phone || i.phone.trim().length < 10) && (!i.email || !i.email.includes('@'))).length
         };
 
         res.json({ items, stats });
@@ -3684,22 +4094,23 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
             );
 
             const phone = firm.phone || existing?.phone || '';
+            const email = firm.email || existing?.email || '';
 
             if (existing) {
                 await db.run(
                     `UPDATE reconciliations 
-                     SET balance = ?, total_billed = ?, total_paid = ?, phone = ?, updated_at = ?
+                     SET balance = ?, total_billed = ?, total_paid = ?, phone = ?, email = ?, updated_at = ?
                      WHERE id = ?`,
-                    [balance, totalBilled, totalPaid, phone, now, existing.id]
+                    [balance, totalBilled, totalPaid, phone, email, now, existing.id]
                 );
             } else {
                 const recId = 'rec_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
                 const token = crypto.randomBytes(16).toString('hex');
                 await db.run(
                     `INSERT INTO reconciliations (
-                        id, firm_id, period, balance, total_billed, total_paid, status, phone, token, created_at, updated_at
-                     ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING_SEND', ?, ?, ?, ?)`,
-                    [recId, firmId, period, balance, totalBilled, totalPaid, phone, token, now, now]
+                        id, firm_id, period, balance, total_billed, total_paid, status, phone, email, token, created_at, updated_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING_SEND', ?, ?, ?, ?, ?)`,
+                    [recId, firmId, period, balance, totalBilled, totalPaid, phone, email, token, now, now]
                 );
             }
             upsertedCount++;
@@ -3716,7 +4127,37 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
     }
 });
 
-// Telefon Numarası Güncelle
+// İletişim Bilgilerini Güncelle (Telefon ve E-Posta)
+app.post('/api/reconciliation/update-contact', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { firmId, phone, email } = req.body;
+        if (!firmId) return res.status(400).json({ error: 'Firma ID zorunludur.' });
+
+        const cleanPhone = String(phone || '').trim();
+        const cleanEmail = String(email || '').trim();
+
+        // 1. Reconciliations tablosunu güncelle
+        await db.run("UPDATE reconciliations SET phone = ?, email = ? WHERE firm_id = ?", [cleanPhone, cleanEmail, firmId]);
+
+        // 2. Firms tablosundaki data JSON'ına da işle
+        const firmRow = await db.get("SELECT data FROM firms WHERE id = ?", [firmId]);
+        if (firmRow) {
+            try {
+                const fData = JSON.parse(firmRow.data);
+                fData.phone = cleanPhone;
+                fData.email = cleanEmail;
+                await db.run("UPDATE firms SET data = ? WHERE id = ?", [JSON.stringify(fData), firmId]);
+            } catch (_) {}
+        }
+
+        res.json({ success: true, message: 'İletişim bilgileri başarıyla güncellendi.' });
+    } catch (e) {
+        res.status(500).json({ error: 'İletişim bilgileri güncellenemedi: ' + e.message });
+    }
+});
+
+// Eski Telefon Numarası Güncelle (Geriye Dönük Uyumluluk)
 app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
@@ -3724,11 +4165,8 @@ app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, as
         if (!firmId) return res.status(400).json({ error: 'Firma ID zorunludur.' });
 
         const cleanPhone = String(phone || '').trim();
-
-        // 1. Reconciliations tablosunu güncelle
         await db.run("UPDATE reconciliations SET phone = ? WHERE firm_id = ?", [cleanPhone, firmId]);
 
-        // 2. Firms tablosundaki data JSON'ına da işle
         const firmRow = await db.get("SELECT data FROM firms WHERE id = ?", [firmId]);
         if (firmRow) {
             try {
@@ -3744,62 +4182,38 @@ app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, as
     }
 });
 
-// Tekli WhatsApp Gönderimi
+// Tekli Çoklu Kanal Gönderimi (WhatsApp / E-Posta / İkisi Birden)
 app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (!isWaConnected || !waSocket) {
-            return res.status(400).json({ error: 'WhatsApp bağlı değil! Lütfen önce QR kodunu okutarak cihazı bağlayın.' });
-        }
-
         const { reconciliationId } = req.body;
         const rec = await db.get("SELECT * FROM reconciliations WHERE id = ?", [reconciliationId]);
         if (!rec) return res.status(404).json({ error: 'Mutabakat kaydı bulunamadı.' });
 
-        const firm = await getFirmById(rec.firm_id);
-        if (!firm) return res.status(404).json({ error: 'Firma bulunamadı.' });
+        const result = await dispatchReconciliationItem(rec, req);
 
-        const targetPhone = formatPhoneForWhatsApp(rec.phone || firm.phone);
-        if (!targetPhone) {
-            return res.status(400).json({ error: 'Geçerli bir telefon numarası bulunamadı. Lütfen telefon alanını kontrol edin.' });
+        let msg = 'Mutabakat mektubu başarıyla iletildi.';
+        if (result.sentChannels === 'BOTH') {
+            msg = 'Mutabakat mektubu hem WhatsApp hem de E-Posta üzerinden başarıyla iletildi.';
+        } else if (result.sentChannels === 'WHATSAPP') {
+            msg = 'Mutabakat mektubu WhatsApp üzerinden başarıyla iletildi.';
+        } else if (result.sentChannels === 'EMAIL') {
+            msg = 'Mutabakat mektubu E-Posta ile başarıyla iletildi.';
         }
 
-        // PDF Üret
-        const transactions = await getTransactionsForFirm(rec.firm_id);
-        const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
-        const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
-        const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
+        if (result.warnings) {
+            msg += ` (Uyarı: ${result.warnings})`;
+        }
 
-        // Host adresini al (Cloudflare Tunnel, Yerel Ağ veya Public URL)
-        const approvalUrl = `${getBaseUrl(req)}/mutabakat/${rec.token}`;
-
-        const caption = buildReconciliationCaption(firm, rec, approvalUrl);
-
-        const jid = `${targetPhone}@s.whatsapp.net`;
-        await waSocket.sendMessage(jid, {
-            document: pdfBuffer,
-            mimetype: 'application/pdf',
-            fileName: filename,
-            caption: caption
-        });
-
-        const now = new Date().toISOString();
-        await db.run("UPDATE reconciliations SET status = 'SENT', sent_at = ?, updated_at = ? WHERE id = ?", [now, now, rec.id]);
-
-        await logAuditEvent(req, 'RECONCILIATION_SENT_SINGLE', { firmId: rec.firm_id, phone: targetPhone }, 'SUCCESS');
-        res.json({ success: true, message: `Mesaj başarıyla ${targetPhone} numarasına iletildi.` });
+        res.json({ success: true, message: msg, result });
     } catch (e) {
         console.error('Tekli gönderim hatası:', e);
-        res.status(500).json({ error: 'WhatsApp gönderim hatası: ' + e.message });
+        res.status(500).json({ error: e.message || 'Gönderim hatası oluştu.' });
     }
 });
 
-// Toplu WhatsApp Gönderimi
+// Toplu Çoklu Kanal Gönderimi (WhatsApp + E-Posta)
 app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        if (!isWaConnected || !waSocket) {
-            return res.status(400).json({ error: 'WhatsApp bağlı değil! Lütfen önce QR kodunu okutarak cihazı bağlayın.' });
-        }
-
         const { period, firmIds } = req.body;
         let query = "SELECT * FROM reconciliations WHERE period = ?";
         let params = [period];
@@ -3810,70 +4224,59 @@ app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, asyn
         }
 
         const recs = await db.all(query, params);
-        const validRecs = recs.filter(r => formatPhoneForWhatsApp(r.phone));
 
-        if (validRecs.length === 0) {
-            return res.status(400).json({ error: 'Gönderilecek telefon numarası olan firma bulunamadı.' });
+        // Gönderilebilir olanlar: Telefon veya E-posta adresinden en az biri olanlar
+        const eligibleRecs = [];
+        for (const r of recs) {
+            const firm = await getFirmById(r.firm_id);
+            const hasPhone = Boolean(formatPhoneForWhatsApp(r.phone || firm?.phone));
+            const hasEmail = Boolean((r.email || firm?.email || '').trim().includes('@'));
+            if (hasPhone || hasEmail) {
+                eligibleRecs.push({ ...r, _hasPhone: hasPhone, _hasEmail: hasEmail });
+            }
         }
 
-        const baseUrl = getBaseUrl(req);
+        if (eligibleRecs.length === 0) {
+            return res.status(400).json({ error: 'Gönderilecek geçerli iletişim bilgisi (Telefon veya E-posta) bulunan firma bulunamadı.' });
+        }
 
         // Arka planda kuyruk başlat
         (async () => {
-            console.log(`[WhatsApp Toplu Mutabakat] ${validRecs.length} firmaya gönderim başlatıldı.`);
+            console.log(`[Toplu Mutabakat] ${eligibleRecs.length} firmaya çoklu kanal gönderimi başlatıldı.`);
             let sentCount = 0;
 
-            for (const rec of validRecs) {
+            for (const rec of eligibleRecs) {
                 try {
                     const firm = await getFirmById(rec.firm_id);
                     if (!firm) continue;
 
-                    const targetPhone = formatPhoneForWhatsApp(rec.phone || firm.phone);
-                    if (!targetPhone) continue;
-
-                    const transactions = await getTransactionsForFirm(rec.firm_id);
-                    const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
-                    const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
-                    const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
-
-                    const approvalUrl = `${baseUrl}/mutabakat/${rec.token}`;
-
-                    const caption = buildReconciliationCaption(firm, rec, approvalUrl);
-
-                    const jid = `${targetPhone}@s.whatsapp.net`;
-                    await waSocket.sendMessage(jid, {
-                        document: pdfBuffer,
-                        mimetype: 'application/pdf',
-                        fileName: filename,
-                        caption: caption
-                    });
-
-                    const now = new Date().toISOString();
-                    await db.run("UPDATE reconciliations SET status = 'SENT', sent_at = ?, updated_at = ? WHERE id = ?", [now, now, rec.id]);
+                    const result = await dispatchReconciliationItem(rec, req);
                     sentCount++;
 
                     io.emit('reconciliation_progress', {
                         current: sentCount,
-                        total: validRecs.length,
+                        total: eligibleRecs.length,
                         firmName: firm.name,
+                        channel: result.sentChannels,
                         status: 'SUCCESS'
                     });
 
-                    // Anti-Spam Gecikmesi: 4 ile 7 saniye arası bekle
-                    const delayMs = Math.floor(Math.random() * 3000) + 4000;
+                    // Anti-Spam / Rate-limiting Gecikmesi: Eğer WhatsApp gönderildiyse 3-5 sn bekle, sadece email ise 1 sn bekle
+                    const isWa = result.sentChannels === 'WHATSAPP' || result.sentChannels === 'BOTH';
+                    const delayMs = isWa ? (Math.floor(Math.random() * 2000) + 3000) : 1000;
                     await new Promise(r => setTimeout(r, delayMs));
 
                 } catch (sendErr) {
-                    console.error(`[WhatsApp Toplu Mutabakat] Firma ${rec.firm_id} gönderilemedi:`, sendErr);
+                    console.error(`[Toplu Mutabakat] Firma ${rec.firm_id} gönderilemedi:`, sendErr.message);
                 }
             }
-            console.log(`[WhatsApp Toplu Mutabakat] Tamamlandı. ${sentCount} adet mesaj gönderildi.`);
-        })().catch(err => console.error('[WhatsApp Toplu Mutabakat] Arka plan hatası:', err));
+            console.log(`[Toplu Mutabakat] Tamamlandı. ${sentCount} firmaya gönderim yapıldı.`);
+        })().catch(err => console.error('[Toplu Mutabakat] Arka plan hatası:', err));
 
         res.json({
             success: true,
-            total: validRecs.length,
-            message: `${validRecs.length} firmaya otomatik WhatsApp mutabakat gönderimi başlatıldı.`
+            total: eligibleRecs.length,
+            message: `${eligibleRecs.length} firmaya çoklu kanal (WhatsApp / E-Posta) mutabakat gönderimi başlatıldı.`
         });
     } catch (e) {
         console.error('Toplu gönderim başlatma hatası:', e);
@@ -4114,16 +4517,19 @@ app.get('/mutabakat/:token', async (req, res) => {
 
                 <script>
                     const TOKEN = "${token}";
+                    const hasResponded = ${hasResponded ? 'true' : 'false'};
 
                     function showDisputeForm() {
-                        document.getElementById('disputeForm').classList.remove('hidden');
+                        const form = document.getElementById('disputeForm');
+                        if (form) form.classList.remove('hidden');
                     }
                     function hideDisputeForm() {
-                        document.getElementById('disputeForm').classList.add('hidden');
+                        const form = document.getElementById('disputeForm');
+                        if (form) form.classList.add('hidden');
                     }
 
-                    async function handleApprove() {
-                        if (!confirm("Kayıtların mutabık olduğunu onaylıyor musunuz?")) return;
+                    async function handleApprove(skipConfirm = false) {
+                        if (!skipConfirm && !confirm("Kayıtların mutabık olduğunu onaylıyor musunuz?")) return;
                         try {
                             const res = await fetch('/api/mutabakat/public-respond', {
                                 method: 'POST',
@@ -4183,6 +4589,25 @@ app.get('/mutabakat/:token', async (req, res) => {
                             </div>
                         \`;
                     }
+
+                    // E-postadaki direkt onay ve itiraz butonlarını otomatik tetikle
+                    window.addEventListener('DOMContentLoaded', () => {
+                        const urlParams = new URLSearchParams(window.location.search);
+                        const initialAction = urlParams.get('action');
+
+                        if (!hasResponded) {
+                            if (initialAction === 'approve') {
+                                setTimeout(() => {
+                                    handleApprove(true);
+                                }, 300);
+                            } else if (initialAction === 'dispute') {
+                                setTimeout(() => {
+                                    showDisputeForm();
+                                    document.getElementById('disputeForm')?.scrollIntoView({ behavior: 'smooth' });
+                                }, 200);
+                            }
+                        }
+                    });
                 </script>
             </body>
             </html>

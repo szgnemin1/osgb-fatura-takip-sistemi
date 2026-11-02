@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -791,6 +791,46 @@ export const db = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Telefon numarası güncellenemedi.');
+    return data;
+  },
+
+  updateReconciliationContact: async (firmId: string, phone: string, email: string): Promise<{ success: boolean; message?: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/update-contact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firmId, phone, email })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'İletişim bilgileri güncellenemedi.');
+    return data;
+  },
+
+  getSmtpConfig: async (): Promise<SmtpConfig> => {
+    const res = await fetchWithAuth('/api/smtp/config');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'SMTP ayarları alınamadı.');
+    return data;
+  },
+
+  saveSmtpConfig: async (config: SmtpConfig): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth('/api/smtp/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'SMTP ayarları kaydedilemedi.');
+    return data;
+  },
+
+  sendTestEmail: async (toEmail: string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth('/api/smtp/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toEmail })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Test e-postası gönderilemedi.');
     return data;
   },
 
