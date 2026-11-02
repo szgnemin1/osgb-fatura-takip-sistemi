@@ -3625,13 +3625,16 @@ async function getSmtpSettings() {
 
 function createMailTransporter(settings) {
     if (!settings || !settings.host || !settings.user) return null;
+    const cleanUser = settings.user ? settings.user.trim() : '';
+    const cleanPass = settings.pass ? settings.pass.replace(/\s+/g, '') : '';
+
     return nodemailer.createTransport({
-        host: settings.host,
+        host: settings.host ? settings.host.trim() : '',
         port: Number(settings.port) || 587,
         secure: Number(settings.secure) === 1 || Number(settings.port) === 465,
         auth: {
-            user: settings.user,
-            pass: settings.pass
+            user: cleanUser,
+            pass: cleanPass
         },
         tls: {
             rejectUnauthorized: false
@@ -3926,6 +3929,8 @@ app.post('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) =
         let finalPass = pass;
         if ((!pass || pass === '********') && current && current.pass) {
             finalPass = current.pass;
+        } else if (pass) {
+            finalPass = pass.replace(/\s+/g, '');
         }
 
         if (current) {
@@ -3982,7 +3987,11 @@ app.post('/api/smtp/test', authenticateToken, requireAdmin, async (req, res) => 
         res.json({ success: true, message: `Test e-postası başarıyla "${toEmail}" adresine iletildi.` });
     } catch (e) {
         console.error('SMTP test hatası:', e);
-        res.status(500).json({ error: 'Test e-postası gönderilemedi: ' + e.message });
+        let errorMsg = e.message || 'Bilinmeyen hata';
+        if (errorMsg.includes('534-5.7.9') || errorMsg.includes('Application-specific password required') || errorMsg.includes('InvalidSecondFactor')) {
+            errorMsg = "Gmail Güvenlik Uyarısı (534-5.7.9): Standart hesap şifreniz yerine Google Hesabınızdan (myaccount.google.com/apppasswords) 16 haneli 'Uygulama Şifresi' oluşturup yapıştırmalısınız.";
+        }
+        res.status(500).json({ error: 'Test e-postası gönderilemedi: ' + errorMsg });
     }
 });
 

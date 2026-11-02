@@ -952,11 +952,26 @@ export const Reconciliation: React.FC = () => {
                   type="password"
                   value={smtpConfig.pass}
                   onChange={(e) => setSmtpConfig({ ...smtpConfig, pass: e.target.value })}
-                  placeholder={smtpConfig.configured ? "Değiştirmek istemiyorsanız boş bırakın" : "SMTP şifreniz"}
+                  placeholder={smtpConfig.configured ? "Değiştirmek istemiyorsanız boş bırakın" : "SMTP şifreniz veya 16 haneli uygulama şifresi"}
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white outline-none focus:border-sky-500"
                 />
-                <div className="text-[10px] text-slate-500 mt-1">
-                  Gmail/Yandex kullanıyorsanız lütfen standart hesap şifreniz yerine "Uygulama Şifresi" üretip kullanın.
+                
+                {/* Gmail Uygulama Şifresi Rehberi */}
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-[11px] text-amber-300 space-y-1.5 mt-2">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <span>💡 Gmail Kullanıcıları İçin Zorunlu Adım:</span>
+                  </div>
+                  <div className="text-slate-300 leading-relaxed">
+                    Google güvenlik kuralları gereği standart Gmail şifrenizi kabul etmez. Google Hesabınızda 2 Adımlı Doğrulama etkinken <b>16 haneli bir Uygulama Şifresi</b> üretip buraya yapıştırmalısınız.
+                  </div>
+                  <a
+                    href="https://myaccount.google.com/apppasswords"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-bold underline pt-0.5"
+                  >
+                    👉 Buraya tıklayarak Google Uygulama Şifresi oluşturun (myaccount.google.com/apppasswords)
+                  </a>
                 </div>
               </div>
 
