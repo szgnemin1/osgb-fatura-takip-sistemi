@@ -200,6 +200,8 @@ export interface ReconciliationItem {
   response_status?: 'MUTABIK' | 'FARK_VAR';
   response_balance?: number;
   response_note?: string;
+  responder_name?: string;
+  responder_title?: string;
   client_ip?: string;
   created_at: string;
   updated_at?: string;

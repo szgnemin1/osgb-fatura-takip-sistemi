@@ -455,6 +455,12 @@ async function createDatabaseBackup() {
         if (!recColNames.includes('sent_channels')) {
             await db.run("ALTER TABLE reconciliations ADD COLUMN sent_channels TEXT;");
         }
+        if (!recColNames.includes('responder_name')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN responder_name TEXT;");
+        }
+        if (!recColNames.includes('responder_title')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN responder_title TEXT;");
+        }
     } catch (migErr) {
         console.error("Reconciliations migration hatası:", migErr);
     }
@@ -3222,141 +3228,24 @@ function isDisputeText(text) {
 
                     const firm = await getFirmById(rec.firm_id);
                     const firmName = firm?.name || 'Değerli Müşterimiz';
-                    const now = new Date().toISOString();
+                    const approvalUrl = `${getBaseUrl()}/mutabakat/${rec.token}`;
 
-                    // DURUM 1: MUTABIKIZ / ONAY
-                    if (isApprovalText(text)) {
-                        await db.run(
-                            `UPDATE reconciliations 
-                             SET status = 'APPROVED', response_status = 'MUTABIK', response_at = ?, client_ip = 'WhatsApp Bot', updated_at = ?
-                             WHERE id = ?`,
-                            [now, now, rec.id]
-                        );
+                    const replyMsg = 
+                        `Sayın Yetkili (*${firmName}*),\n\n` +
+                        `Cari hesap mutabakat işlemlerinizi resmi olarak onaylamak veya varsa itirazınızı iletmek için şirket yetkilisinin *Adı, Soyadı ve Görevi* ile birlikte aşağıdaki bağlantı üzerinden işlem yapılması gerekmektedir:\n\n` +
+                        `🌐 *Resmi Onay Bağlantısı:*\n` +
+                        `${approvalUrl}\n\n` +
+                        `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`;
 
-                        io.emit('mutabakat_response_received', {
-                            token: rec.token,
-                            status: 'APPROVED',
-                            firmId: rec.firm_id
-                        });
-
-                        const replyMsg = 
-                            `✅ *Mutabakat Onayınız Alındı!*\n\n` +
-                            `Sayın Yetkili,\n` +
-                            `*${firmName}* firması adına *${rec.period}* dönemi cari hesap mutabakat onayınız başarıyla sisteme kaydedilmiştir.\n\n` +
-                            `İş birliğiniz için teşekkür eder, iyi çalışmalar dileriz. 🤝\n\n` +
-                            `*OSGB Finans & Muhasebe Yönetimi*`;
-
-                        try {
-                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
-                        } catch (sendErr) {
-                            if (resolvedPhone) {
-                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
-                            }
+                    try {
+                        await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
+                    } catch (sendErr) {
+                        if (resolvedPhone) {
+                            await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
                         }
-                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatını ONAYLADI (Numara: ${resolvedPhone})`);
-                        continue;
                     }
-
-                    // DURUM 2: FARK VAR / İTİRAZ
-                    if (isDisputeText(text)) {
-                        const lower = text.toLowerCase().trim();
-                        let note = '';
-                        if (lower.startsWith('2 ') || lower.startsWith('2.') || lower.startsWith('2-')) {
-                            note = text.substring(2).trim();
-                        } else if (text.length > 8 && !lower.startsWith('2')) {
-                            note = text;
-                        }
-
-                        await db.run(
-                            `UPDATE reconciliations 
-                             SET status = 'DISPUTED', response_status = 'FARK_VAR', response_note = ?, response_at = ?, client_ip = 'WhatsApp Bot', updated_at = ?
-                             WHERE id = ?`,
-                            [note || null, now, now, rec.id]
-                        );
-
-                        io.emit('mutabakat_response_received', {
-                            token: rec.token,
-                            status: 'DISPUTED',
-                            firmId: rec.firm_id
-                        });
-
-                        let replyMsg = '';
-                        if (note) {
-                            replyMsg = 
-                                `⚠️ *Mutabakat Fark Bildirimi Alındı*\n\n` +
-                                `Sayın Yetkili,\n` +
-                                `*${firmName}* adına ilettiğiniz itiraz açıklaması (*"${note.slice(0, 150)}"*) muhasebe ve finans ekibimize iletilmiştir.\n\n` +
-                                `Kayıtlarınız incelenerek en kısa sürede tarafınıza dönüş sağlanacaktır. Teşekkür ederiz.`;
-                        } else {
-                            replyMsg = 
-                                `⚠️ *Mutabakat Fark / İtiraz Bildirimi*\n\n` +
-                                `Sayın Yetkili,\n` +
-                                `*${firmName}* adına *${rec.period}* dönemi mutabakat itirazınız işleme alınmıştır.\n\n` +
-                                `📌 *Lütfen şirket kayıtlarınızdaki bakiye tutarını veya itiraz nedeninizi bu mesaja yanıt olarak yazınız.*\n\n` +
-                                `Finans ekibimiz ilettiğiniz not doğrultusunda mutabakatı inceleyecektir.`;
-                        }
-
-                        try {
-                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
-                        } catch (sendErr) {
-                            if (resolvedPhone) {
-                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
-                            }
-                        }
-                        console.log(`[WhatsApp Chatbot] ${firmName} mutabakatına FARK VAR dedi (Numara: ${resolvedPhone})`);
-                        continue;
-                    }
-
-                    // DURUM 3: Zaten itiraz edilmiş ve açıklama/tutar bekleniyorsa gelen metni kaydet
-                    if (rec.status === 'DISPUTED') {
-                        // Sayısal bakiye tutarı tespiti (örn: 2000, 2000 TL, 15.000)
-                        const numMatch = text.match(/([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{1,2})?|[0-9]+(?:[.,][0-9]{1,2})?)/);
-                        let extractedBalance = rec.response_balance;
-                        if (numMatch && !['1', '2'].includes(numMatch[1])) {
-                            const cleanNum = numMatch[1].replace(/\./g, '').replace(',', '.');
-                            if (!isNaN(cleanNum)) extractedBalance = Number(cleanNum);
-                        }
-
-                        // Açıklama notunu birleştir veya güncelle
-                        let updatedNote = text;
-                        if (rec.response_note && rec.response_note.trim().length > 0) {
-                            if (!rec.response_note.includes(text)) {
-                                updatedNote = `${rec.response_note} | ${text}`;
-                            } else {
-                                updatedNote = rec.response_note;
-                            }
-                        }
-
-                        await db.run(
-                            `UPDATE reconciliations 
-                             SET response_note = ?, response_balance = ?, updated_at = ?
-                             WHERE id = ?`,
-                            [updatedNote, extractedBalance, now, rec.id]
-                        );
-
-                        io.emit('mutabakat_response_received', {
-                            token: rec.token,
-                            status: 'DISPUTED',
-                            firmId: rec.firm_id
-                        });
-
-                        const replyMsg = 
-                            `📩 *İtiraz Bilgileriniz Kaydedildi*\n\n` +
-                            `Sayın Yetkili,\n` +
-                            `İlettiğiniz açıklama (*"${text.slice(0, 150)}"*) muhasebe ve finans ekibimize iletilmiştir.\n\n` +
-                            (extractedBalance ? `👉 *Kayıtlarınızdaki Bakiye:* ${Number(extractedBalance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL\n\n` : '') +
-                            `Gerekli kontroller sağlanıp tarafınıza dönüş yapılacaktır. Teşekkür ederiz.`;
-
-                        try {
-                            await waSocket.sendMessage(remoteJid, { text: replyMsg }, { quoted: msg });
-                        } catch (sendErr) {
-                            if (resolvedPhone) {
-                                await waSocket.sendMessage(`${resolvedPhone}@s.whatsapp.net`, { text: replyMsg }, { quoted: msg }).catch(() => {});
-                            }
-                        }
-                        console.log(`[WhatsApp Chatbot] ${firmName} itiraz detayı iletti: ${text} (Not: ${updatedNote})`);
-                        continue;
-                    }
+                    console.log(`[WhatsApp Chatbot] ${firmName} (${resolvedPhone}) web mutabakat linkine yönlendirildi.`);
+                    continue;
                 }
             } catch (e) {
                 console.error('[WhatsApp Chatbot] Mesaj işleme hatası:', e);
@@ -3383,8 +3272,8 @@ function getBaseUrl(req) {
     if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
     if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
     
-    let host = req.headers['x-forwarded-host'] || req.get('host') || `127.0.0.1:${PORT}`;
-    const protocol = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
+    let host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || `${ip.address()}.nip.io:${PORT}`;
+    const protocol = req?.headers?.['x-forwarded-proto'] || (req?.connection && req.connection.encrypted ? 'https' : 'http');
     
     // Eğer localhost veya 127.0.0.1 ise, yerel ağ IP'sini nip.io domainiyle wrap et (WhatsApp'ta linkin port ile kesilmemesi için)
     if (host.includes('localhost') || host.includes('127.0.0.1')) {
@@ -3413,14 +3302,11 @@ function buildReconciliationCaption(firm, rec, approvalUrl) {
         `Sayın Yetkili (*${firm.name}*),\n\n` +
         `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
         `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
-        `Detaylı cari hesap ekstresi ve mutabakat mektubunuz ekte resmi PDF olarak sunulmuştur.\n\n` +
+        `Detaylı cari hesap ekstresi ve resmi mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `⚡ *HIZLI YANIT (WhatsApp İçi)*\n` +
+        `🛡️ *RESMİ CARİ MUTABAKAT ONAYI*\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `Bu mesaja doğrudan:\n` +
-        `👉 *1* yazıp gönderirseniz: *✅ Mutabıkız (Kayıtlar Doğru)*\n` +
-        `👉 *2* yazıp gönderirseniz: *❌ Fark Var (İtiraz Bildirimi)*\n\n` +
-        `Dilerseniz resmi mektubu incelemek ve web üzerinden butonlarla onaylamak için:\n` +
+        `Cari hesap kayıtlarımızı incelemek ve ad, soyad ve görev bilgilerinizi girerek mutabakatı onaylamak veya fark bildirmek için lütfen aşağıdaki bağlantıya tıklayınız:\n\n` +
         `🌐 *Onay Bağlantısı:*\n` +
         `${approvalUrl}\n\n` +
         `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`
@@ -4041,6 +3927,8 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
                 response_status: r.response_status,
                 response_balance: r.response_balance,
                 response_note: r.response_note,
+                responder_name: r.responder_name || '',
+                responder_title: r.responder_title || '',
                 client_ip: r.client_ip,
                 created_at: r.created_at,
                 updated_at: r.updated_at
@@ -4338,7 +4226,7 @@ app.get('/mutabakat/:token/pdf', async (req, res) => {
 app.post('/api/mutabakat/public-respond', async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
-        const { token, status, responseBalance, responseNote } = req.body;
+        const { token, status, responseBalance, responseNote, responderName, responderTitle } = req.body;
         if (!token || !status) return res.status(400).json({ error: 'Eksik parametre.' });
 
         const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
@@ -4351,15 +4239,21 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
 
         await db.run(
             `UPDATE reconciliations 
-             SET status = ?, response_status = ?, response_balance = ?, response_note = ?, response_at = ?, client_ip = ?, updated_at = ?
+             SET status = ?, response_status = ?, response_balance = ?, response_note = ?, 
+                 responder_name = ?, responder_title = ?, response_at = ?, client_ip = ?, updated_at = ?
              WHERE token = ?`,
-            [dbStatus, status, responseBalance ? Number(responseBalance) : null, responseNote || null, now, clientIp, now, token]
+            [dbStatus, status, responseBalance ? Number(responseBalance) : null, responseNote || null,
+             responderName ? String(responderName).trim() : null,
+             responderTitle ? String(responderTitle).trim() : null,
+             now, clientIp, now, token]
         );
 
         io.emit('mutabakat_response_received', {
             token,
             status: dbStatus,
-            firmId: rec.firm_id
+            firmId: rec.firm_id,
+            responderName: responderName?.trim(),
+            responderTitle: responderTitle?.trim()
         });
 
         res.json({ success: true, message: 'Yanıtınız başarıyla kaydedildi. Teşekkür ederiz.' });
@@ -4478,9 +4372,9 @@ app.get('/mutabakat/:token', async (req, res) => {
                         ${hasResponded ? `
                             <div class="p-5 rounded-2xl ${isApproved ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2">
                                 <div class="text-3xl">${isApproved ? '✅' : '⚠️'}</div>
-                                <div class="font-bold text-sm text-white">${isApproved ? 'Kayıtlarımız Mutabıktır' : 'Fark / İtiraz Bildirimi Yapıldı'}</div>
-                                <div class="text-xs opacity-80">
-                                    ${isApproved ? `Bu mutabakat ${new Date(rec.response_at).toLocaleString('tr-TR')} tarihinde onaylanmıştır.` : `İlettiğiniz itiraz notu (${escapeHtml(rec.response_note || '')}) muhasebe birimimize ulaştırılmıştır.`}
+                                <div class="font-bold text-sm text-white">${isApproved ? 'Kayıtlarımız Mutabıktır (Onaylandı)' : 'Fark / İtiraz Bildirimi Yapıldı'}</div>
+                                <div class="text-xs opacity-90">
+                                    ${isApproved ? `Bu mutabakat <b>${escapeHtml(rec.responder_name || 'Yetkili')}</b> ${rec.responder_title ? `(${escapeHtml(rec.responder_title)})` : ''} tarafından ${new Date(rec.response_at).toLocaleString('tr-TR')} tarihinde onaylanmıştır.` : `İtiraz Bildiren: <b>${escapeHtml(rec.responder_name || 'Yetkili')}</b> ${rec.responder_title ? `(${escapeHtml(rec.responder_title)})` : ''}<br>İlettiğiniz not: "${escapeHtml(rec.response_note || '')}"`}
                                 </div>
                             </div>
                         ` : `
@@ -4489,8 +4383,8 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     Lütfen yukarıdaki bakiye ve ekstreye göre mutabakat durumunuzu seçiniz:
                                 </div>
 
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button type="button" onclick="handleApprove()" class="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all">
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="mainChoiceButtons">
+                                    <button type="button" onclick="showApprovalForm()" class="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950 transition-all">
                                         <span>✅ Kayıtlarımız Mutabıktır</span>
                                     </button>
 
@@ -4499,9 +4393,48 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     </button>
                                 </div>
 
+                                <!-- Onay Formu (Yetkili Adı & Görevi) -->
+                                <div id="approvalForm" class="hidden bg-slate-950 p-5 rounded-2xl border border-emerald-500/40 space-y-3.5 mt-4 animate-in fade-in">
+                                    <div class="flex items-center gap-2 text-xs font-bold text-emerald-400 pb-2 border-b border-slate-800">
+                                        <span>✅ Cari Mutabakat Onay Formu</span>
+                                    </div>
+                                    <p class="text-[11px] text-slate-400">
+                                        Şirketiniz adına mutabakatı onaylayan yetkili kişinin bilgilerini giriniz:
+                                    </p>
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-emerald-400">*</span></label>
+                                        <input type="text" id="approveName" placeholder="Örn: Ahmet Yılmaz" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-emerald-400">*</span></label>
+                                        <input type="text" id="approveTitle" placeholder="Örn: Muhasebe Müdürü, Şirket Müdürü, Mali Müşavir" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500">
+                                    </div>
+                                    <div class="flex items-center justify-end gap-2 pt-2">
+                                        <button type="button" onclick="hideApprovalForm()" class="px-3.5 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
+                                        <button type="button" onclick="handleApproveSubmit()" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-1.5">
+                                            <span>✅ Resmi Olarak Onayla</span>
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <!-- Fark Bildirim Formu (Gizli) -->
-                                <div id="disputeForm" class="hidden bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 mt-4 animate-in fade-in">
-                                    <div class="text-xs font-bold text-rose-400">Fark / İtiraz Detayları</div>
+                                <div id="disputeForm" class="hidden bg-slate-950 p-5 rounded-2xl border border-rose-500/40 space-y-3.5 mt-4 animate-in fade-in">
+                                    <div class="flex items-center gap-2 text-xs font-bold text-rose-400 pb-2 border-b border-slate-800">
+                                        <span>❌ Fark / İtiraz Bildirim Formu</span>
+                                    </div>
+                                    <p class="text-[11px] text-slate-400">
+                                        Lütfen işlemi yapan yetkilinin bilgilerini ve itiraz detayını giriniz:
+                                    </p>
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        <div>
+                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-rose-400">*</span></label>
+                                            <input type="text" id="disputeName" placeholder="Örn: Ahmet Yılmaz" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-rose-400">*</span></label>
+                                            <input type="text" id="disputeTitle" placeholder="Örn: Muhasebe Müdürü" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
+                                        </div>
+                                    </div>
                                     <div>
                                         <label class="block text-[11px] text-slate-400 mb-1">Sizin Kayıtlarınızdaki Bakiye (TL - Opsiyonel)</label>
                                         <input type="number" id="statedBalance" placeholder="Örn: 15000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
@@ -4511,8 +4444,10 @@ app.get('/mutabakat/:token', async (req, res) => {
                                         <textarea id="disputeNote" rows="2" placeholder="Örn: Eylül ayı faturası tarafımıza ulaşmadı veya ödeme eksik işlenmiş..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500"></textarea>
                                     </div>
                                     <div class="flex items-center justify-end gap-2 pt-1">
-                                        <button type="button" onclick="hideDisputeForm()" class="px-3 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
-                                        <button type="button" onclick="handleDisputeSubmit()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-md">Bildirimi İlet</button>
+                                        <button type="button" onclick="hideDisputeForm()" class="px-3.5 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
+                                        <button type="button" onclick="handleDisputeSubmit()" class="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-md">
+                                            <span>📩 Bildirimi İlet</span>
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -4528,26 +4463,52 @@ app.get('/mutabakat/:token', async (req, res) => {
                     const TOKEN = "${token}";
                     const hasResponded = ${hasResponded ? 'true' : 'false'};
 
-                    function showDisputeForm() {
-                        const form = document.getElementById('disputeForm');
-                        if (form) form.classList.remove('hidden');
+                    function showApprovalForm() {
+                        document.getElementById('approvalForm')?.classList.remove('hidden');
+                        document.getElementById('disputeForm')?.classList.add('hidden');
+                        document.getElementById('approveName')?.focus();
                     }
-                    function hideDisputeForm() {
-                        const form = document.getElementById('disputeForm');
-                        if (form) form.classList.add('hidden');
+                    function hideApprovalForm() {
+                        document.getElementById('approvalForm')?.classList.add('hidden');
                     }
 
-                    async function handleApprove(skipConfirm = false) {
-                        if (!skipConfirm && !confirm("Kayıtların mutabık olduğunu onaylıyor musunuz?")) return;
+                    function showDisputeForm() {
+                        document.getElementById('disputeForm')?.classList.remove('hidden');
+                        document.getElementById('approvalForm')?.classList.add('hidden');
+                        document.getElementById('disputeName')?.focus();
+                    }
+                    function hideDisputeForm() {
+                        document.getElementById('disputeForm')?.classList.add('hidden');
+                    }
+
+                    async function handleApproveSubmit() {
+                        const name = document.getElementById('approveName')?.value.trim();
+                        const title = document.getElementById('approveTitle')?.value.trim();
+                        if (!name) {
+                            alert('Lütfen adınızı ve soyadınızı giriniz.');
+                            document.getElementById('approveName')?.focus();
+                            return;
+                        }
+                        if (!title) {
+                            alert('Lütfen şirketteki görevinizi / unvanınızı giriniz (Örn: Muhasebe Müdürü).');
+                            document.getElementById('approveTitle')?.focus();
+                            return;
+                        }
+
                         try {
                             const res = await fetch('/api/mutabakat/public-respond', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ token: TOKEN, status: 'MUTABIK' })
+                                body: JSON.stringify({ 
+                                    token: TOKEN, 
+                                    status: 'MUTABIK',
+                                    responderName: name,
+                                    responderTitle: title
+                                })
                             });
                             const data = await res.json();
                             if (res.ok) {
-                                renderSuccessView('MUTABIK');
+                                renderSuccessView('MUTABIK', name, title);
                             } else {
                                 alert(data.error || 'İşlem başarısız.');
                             }
@@ -4557,10 +4518,24 @@ app.get('/mutabakat/:token', async (req, res) => {
                     }
 
                     async function handleDisputeSubmit() {
-                        const note = document.getElementById('disputeNote').value.trim();
-                        const balance = document.getElementById('statedBalance').value;
+                        const name = document.getElementById('disputeName')?.value.trim();
+                        const title = document.getElementById('disputeTitle')?.value.trim();
+                        const note = document.getElementById('disputeNote')?.value.trim();
+                        const balance = document.getElementById('statedBalance')?.value;
+
+                        if (!name) {
+                            alert('Lütfen adınızı ve soyadınızı giriniz.');
+                            document.getElementById('disputeName')?.focus();
+                            return;
+                        }
+                        if (!title) {
+                            alert('Lütfen şirketteki görevinizi / unvanınızı giriniz.');
+                            document.getElementById('disputeTitle')?.focus();
+                            return;
+                        }
                         if (!note) {
                             alert('Lütfen farkın nedenini belirten kısa bir açıklama yazınız.');
+                            document.getElementById('disputeNote')?.focus();
                             return;
                         }
 
@@ -4571,13 +4546,15 @@ app.get('/mutabakat/:token', async (req, res) => {
                                 body: JSON.stringify({
                                     token: TOKEN,
                                     status: 'FARK_VAR',
+                                    responderName: name,
+                                    responderTitle: title,
                                     responseBalance: balance || null,
                                     responseNote: note
                                 })
                             });
                             const data = await res.json();
                             if (res.ok) {
-                                renderSuccessView('FARK_VAR');
+                                renderSuccessView('FARK_VAR', name, title);
                             } else {
                                 alert(data.error || 'İşlem başarısız.');
                             }
@@ -4586,14 +4563,17 @@ app.get('/mutabakat/:token', async (req, res) => {
                         }
                     }
 
-                    function renderSuccessView(status) {
+                    function renderSuccessView(status, name, title) {
                         const isApp = status === 'MUTABIK';
                         document.getElementById('actionContainer').innerHTML = \`
-                            <div class="p-5 rounded-2xl \${isApp ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2 animate-in zoom-in-95">
+                            <div class="p-6 rounded-2xl \${isApp ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'} text-center space-y-2.5 animate-in zoom-in-95">
                                 <div class="text-4xl">\${isApp ? '✅' : '📩'}</div>
-                                <div class="font-bold text-base text-white">\${isApp ? 'Mutabakatınız Onaylandı!' : 'Bildiriminiz Alındı!'}</div>
-                                <div class="text-xs opacity-90">
-                                    \${isApp ? 'Yanıtınız şirketimiz finans departmanına iletilmiştir. Teşekkür ederiz.' : 'İlettiğiniz not finans ekibimize iletilmiştir, inceleme sonrası sizinle iletişime geçilecektir.'}
+                                <div class="font-bold text-base text-white">\${isApp ? 'Mutabakatınız Onaylandı!' : 'Fark Bildiriminiz Alındı!'}</div>
+                                <div class="text-xs text-slate-300">
+                                    Yetkili: <b>\${name || 'Yetkili'}</b> \${title ? \`(\${title})\` : ''}
+                                </div>
+                                <div class="text-[11px] opacity-80 pt-1">
+                                    \${isApp ? 'Onayınız şirketimiz muhasebe departmanına resmi kayıt olarak iletilmiştir. Teşekkür ederiz.' : 'İlettiğiniz itiraz notu finans ekibimize iletilmiştir, inceleme sonrası sizinle iletişime geçilecektir.'}
                                 </div>
                             </div>
                         \`;
@@ -4607,8 +4587,9 @@ app.get('/mutabakat/:token', async (req, res) => {
                         if (!hasResponded) {
                             if (initialAction === 'approve') {
                                 setTimeout(() => {
-                                    handleApprove(true);
-                                }, 300);
+                                    showApprovalForm();
+                                    document.getElementById('approvalForm')?.scrollIntoView({ behavior: 'smooth' });
+                                }, 200);
                             } else if (initialAction === 'dispute') {
                                 setTimeout(() => {
                                     showDisputeForm();

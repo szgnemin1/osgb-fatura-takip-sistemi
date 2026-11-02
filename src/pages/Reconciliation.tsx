@@ -741,18 +741,32 @@ export const Reconciliation: React.FC = () => {
                       {/* Durum Rozeti */}
                       <td className="py-3 px-4 text-center">
                         {item.status === 'APPROVED' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Mutabık
-                          </span>
+                          <div className="flex flex-col items-center">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Mutabık
+                            </span>
+                            {item.responder_name && (
+                              <div className="text-[10px] text-slate-300 font-semibold mt-1 truncate max-w-[160px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
+                                👤 {item.responder_name} {item.responder_title ? `(${item.responder_title})` : ''}
+                              </div>
+                            )}
+                          </div>
                         ) : item.status === 'DISPUTED' ? (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedDisputeItem(item)}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] font-bold hover:bg-rose-500/20 transition-colors"
-                            title="Müşteri itiraz notunu incelemek için tıklayın"
-                          >
-                            <AlertTriangle className="w-3.5 h-3.5" /> Fark Bildirildi
-                          </button>
+                          <div className="flex flex-col items-center">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDisputeItem(item)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] font-bold hover:bg-rose-500/20 transition-colors"
+                              title="Müşteri itiraz notunu incelemek için tıklayın"
+                            >
+                              <AlertTriangle className="w-3.5 h-3.5" /> Fark Bildirildi
+                            </button>
+                            {item.responder_name && (
+                              <div className="text-[10px] text-rose-300/80 mt-1 truncate max-w-[160px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
+                                👤 {item.responder_name} {item.responder_title ? `(${item.responder_title})` : ''}
+                              </div>
+                            )}
+                          </div>
                         ) : item.status === 'SENT' ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-medium">
                             <Clock className="w-3.5 h-3.5" /> Yanıt Bekleniyor
@@ -1122,6 +1136,15 @@ export const Reconciliation: React.FC = () => {
                 <span className="text-slate-400">Firma:</span>
                 <div className="text-white font-bold text-sm mt-0.5">{selectedDisputeItem.firm_name}</div>
               </div>
+
+              {selectedDisputeItem.responder_name && (
+                <div>
+                  <span className="text-slate-400">İtiraz Bildiren Yetkili:</span>
+                  <div className="text-rose-300 font-semibold mt-0.5 flex items-center gap-1.5">
+                    <span>👤 {selectedDisputeItem.responder_name} {selectedDisputeItem.responder_title ? `(${selectedDisputeItem.responder_title})` : ''}</span>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <div>
