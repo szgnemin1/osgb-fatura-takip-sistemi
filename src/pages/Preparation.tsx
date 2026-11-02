@@ -489,7 +489,7 @@ const Preparation = () => {
     return matchesSearch && matchesType && matchesUpload && matchesGroup;
   });
 
-  // --- TEK BİRLEŞİK EXCEL ŞABLONU İNDİR ---
+  // --- YENİ VERİ YÜKLEME STİLİNE (İSG-KATİP) UYGUN ÖRNEK EXCEL ŞABLONU İNDİR ---
   const handleDownloadUnifiedTemplate = () => {
     let firmsToExport = firms;
     if (selectedGroup !== 'ALL') {
@@ -504,20 +504,26 @@ const Preparation = () => {
         alert(`${selectedGroup !== 'ALL' ? `"${selectedGroup}" grubunda ` : ''}kayıtlı firma bulunamadı.`);
         return;
     }
-    const data = firmsToExport.map(f => ({
-        "Firma ID (DOKUNMAYIN)": f.id,
-        "Firma Adı": f.name,
-        "Grup": f.group || 'Grupsuz',
-        "Fatura Tipi": f.defaultInvoiceType,
-        "Mevcut Limit": f.basePersonLimit,
-        "Çalışan Sayısı (GİRİNİZ)": items[f.id]?.currentEmployeeCount || f.basePersonLimit,
-        "Ekstra Tutar (GİRİNİZ)": items[f.id]?.extraItemAmount || 0
-    }));
+    const data = firmsToExport.map(f => {
+        const item = items[f.id];
+        const primarySgk = f.sgkNumber ? f.sgkNumber.split(',')[0].trim() : '';
+        return {
+            "Hizmet Alan İşyeri Unvanı": f.name,
+            "Hizmet Alan İşyeri SGK/DETSİS No": primarySgk,
+            "Hizmet Alan İşyeri Tehlike Sınıfı": f.dangerClass || 'Az Tehlikeli',
+            "Hizmet Alan İşyeri Çalışan Sayısı": item?.currentEmployeeCount ?? f.basePersonLimit ?? 1,
+            "Hizmet Alan İşyeri İli": 'BURSA',
+            "Firma Grubu": f.group || 'Grupsuz',
+            "Sözleşme Statüsü": 'Sözleşme Devam Ediyor',
+            "Ekstra Tutar": item?.extraItemAmount || 0
+        };
+    });
+
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     const groupSuffix = selectedGroup !== 'ALL' ? `_${selectedGroup.replace(/\s+/g, '_')}` : '';
-    const fileName = `Fatura_Hazirlik_Sablonu${groupSuffix}`;
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Hazirlik_Listesi");
+    const fileName = `ISG_Katip_Yukleme_Sablonu${groupSuffix}`;
+    XLSX.utils.book_append_sheet(workbook, worksheet, "İSG Hizmet Sözleşme Süreçleri L");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toLocaleDateString('tr-TR')}.xlsx`);
   };
 
@@ -640,6 +646,7 @@ const Preparation = () => {
             let countColIdx = -1;
             let dangerColIdx = -1;
             let sgkColIdx = -1;
+            let extraColIdx = -1;
             let idColIdx = -1; // Kendi şablonumuz için geriye dönük uyumluluk
 
             for (let i = 0; i < Math.min(10, rawData.length); i++) {
@@ -659,8 +666,11 @@ const Preparation = () => {
                     if (cell.match(/(tehlike|sınıf|hazard)/) && !cell.match(/(tarih|süre|saat|kod)/)) {
                         dangerColIdx = j;
                     }
-                    if (cell.match(/(sgk|detsis|sicil)/) && !cell.match(/(tehlike|sınıf|tarih|süre)/)) {
+                    if (cell.match(/(sgk|detsis|sicil)/) && !cell.match(/(veren|tehlike|sınıf|tarih|süre)/)) {
                         sgkColIdx = j;
+                    }
+                    if (cell.match(/(ekstra|ek tutar|ilave tutar)/) && !cell.match(/(açıklama|not|oran)/)) {
+                        extraColIdx = j;
                     }
                 }
                 // Minimum isim ve sayı bulduysak veya bizim kendi şablonumuzsa (Farklı sütunlarda olmalılar)
@@ -676,12 +686,13 @@ const Preparation = () => {
             }
 
             const updates: Record<string, number> = {};
+            const extraUpdates: Record<string, number> = {};
             const unmapped: any[] = [];
             const newUploadedIds: string[] = [];
             let matchedCount = 0;
 
             // 1. Önce Excel verisini kendi içinde grupla (Şube Birleştirme Mantığı)
-            const aggregatedExcel: Record<string, { name: string, count: number, danger: string, maxCountForDanger: number }> = {};
+            const aggregatedExcel: Record<string, { name: string, count: number, danger: string, maxCountForDanger: number, sgk: string, extra?: number }> = {};
 
             for (let i = headerRowIdx + 1; i < rawData.length; i++) {
                 const row = rawData[i];
@@ -707,6 +718,8 @@ const Preparation = () => {
                 const rawCount = Number(rawCountStr);
                 const rawDanger = dangerColIdx !== -1 ? String(row[dangerColIdx] || "").trim() : "";
                 const rawSgk = sgkColIdx !== -1 ? String(row[sgkColIdx] || "").trim() : "";
+                const rawExtraStr = extraColIdx !== -1 ? String(row[extraColIdx] || "").replace(/[^0-9.,]/g, '').replace(',', '.') : '';
+                const rawExtra = rawExtraStr ? Number(rawExtraStr) : 0;
 
                 if (!rawName || isNaN(rawCount)) continue;
 
@@ -714,10 +727,13 @@ const Preparation = () => {
                 const groupKey = rawSgk ? `SGK_${rawSgk}` : `NAME_${rawName.toUpperCase().replace(/\s+/g, ' ').trim()}`;
 
                 if (!aggregatedExcel[groupKey]) {
-                    aggregatedExcel[groupKey] = { name: rawName, count: rawCount, danger: rawDanger, maxCountForDanger: rawCount, sgk: rawSgk };
+                    aggregatedExcel[groupKey] = { name: rawName, count: rawCount, danger: rawDanger, maxCountForDanger: rawCount, sgk: rawSgk, extra: rawExtra };
                 } else {
                     const existing = aggregatedExcel[groupKey];
                     existing.count += rawCount; // Çalışan sayısını topla
+                    if (rawExtra > 0) {
+                        existing.extra = (existing.extra || 0) + rawExtra;
+                    }
                     
                     // Tehlike sınıfı farklıysa şube mantığı (az olanı çok olana bağla)
                     if (existing.danger !== rawDanger) {
@@ -741,6 +757,9 @@ const Preparation = () => {
                     if (matchedFirm) {
                         if (updates[matchedFirm.id] === undefined) updates[matchedFirm.id] = 0;
                         updates[matchedFirm.id] += aggrItem.count;
+                        if (aggrItem.extra !== undefined && aggrItem.extra > 0) {
+                            extraUpdates[matchedFirm.id] = (extraUpdates[matchedFirm.id] || 0) + aggrItem.extra;
+                        }
                         if (!newUploadedIds.includes(matchedFirm.id)) {
                             newUploadedIds.push(matchedFirm.id);
                             matchedCount++;
@@ -757,7 +776,8 @@ const Preparation = () => {
                 Object.keys(updates).forEach(id => {
                     newItems[id] = {
                         ...(newItems[id] || { firmId: id, currentEmployeeCount: 0, extraItemAmount: 0 }),
-                        currentEmployeeCount: updates[id]
+                        currentEmployeeCount: updates[id],
+                        ...(extraUpdates[id] !== undefined ? { extraItemAmount: extraUpdates[id] } : {})
                     };
                 });
                 return newItems;
@@ -1094,10 +1114,10 @@ const Preparation = () => {
                          type="button" 
                          onClick={handleDownloadUnifiedTemplate} 
                          className="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors border border-slate-600 shadow-sm"
-                         title="Firma listesi ile tek Excel şablonu indir"
+                         title="İSG-Katip formatında örnek veri yükleme şablonu indir"
                      >
                          <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                         <span>Örnek Şablon</span>
+                         <span>Örnek İSG-Katip Şablonu</span>
                      </button>
                 </div>
            </div>
