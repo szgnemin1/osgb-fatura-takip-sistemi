@@ -21,6 +21,7 @@ const FirmRegistration = () => {
     email: '',
     contactPerson: '',
     address: '',
+    group: '',
     yearlyFee: 0,
     pricingModel: PricingModel.STANDARD,
     tolerancePercentage: 10,
@@ -41,6 +42,8 @@ const FirmRegistration = () => {
   const [successMessage, setSuccessMessage] = useState('');
   const [existingFirms, setExistingFirms] = useState<Firm[]>([]);
   const [selectedFirms, setSelectedFirms] = useState<string[]>([]);
+  const [firmGroups, setFirmGroups] = useState<string[]>([]);
+  const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('ALL');
   
   // Arama State
   const [searchTerm, setSearchTerm] = useState('');
@@ -74,6 +77,7 @@ const FirmRegistration = () => {
 
   const loadFirms = () => {
     setExistingFirms(db.getFirms());
+    setFirmGroups(db.getFirmGroups());
     setSelectedFirms([]);
   };
 
@@ -93,9 +97,17 @@ const FirmRegistration = () => {
         return;
     }
 
+    const numericFields = [
+      'basePersonLimit', 'baseFee', 'extraPersonFee', 'expertPercentage', 'doctorPercentage',
+      'yearlyFee', 'tolerancePercentage', 'secondaryBaseFee', 'secondaryBasePersonLimit',
+      'secondaryExtraPersonFee', 'currentBalance', 'initialBalance', 'vatRate'
+    ];
+
+    const isNumeric = type === 'number' || numericFields.includes(name);
+
     setFormData(prev => ({
       ...prev,
-      [name]: (name === 'name' || name === 'defaultInvoiceType' || name === 'pricingModel' || name === 'secondaryPricingModel' || name === 'taxNumber' || name === 'address' || name === 'parentFirmId' || name === 'serviceType') ? value : Number(value)
+      [name]: isNumeric ? (value === '' ? '' : Number(value)) : value
     }));
   };
 
@@ -444,7 +456,14 @@ const FirmRegistration = () => {
       }
   };
 
-  const filteredFirms = existingFirms.filter(f => f.name.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredFirms = existingFirms.filter(f => {
+    const q = searchTerm.toLowerCase();
+    const matchesSearch = f.name.toLowerCase().includes(q) || (f.taxNumber || '').includes(q) || (f.contactPerson || '').toLowerCase().includes(q) || (f.email || '').toLowerCase().includes(q);
+    const matchesGroup = selectedGroupFilter === 'ALL'
+      ? true
+      : (selectedGroupFilter === 'UNGROUPED' ? !f.group : f.group === selectedGroupFilter);
+    return matchesSearch && matchesGroup;
+  });
 
   // --- RENDER HELPERS ---
   const renderPricingFields = (prefix: '' | 'secondary', model: PricingModel, tiers: PricingTier[], tierSetter: any, tierRemover: any, newTierState: any, newTierStateSetter: any) => {
@@ -712,6 +731,23 @@ const FirmRegistration = () => {
                         <label className="block text-xs font-medium text-slate-300 mb-1">Yetkili / Muhasebe İlgilisi</label>
                         <input type="text" name="contactPerson" value={formData.contactPerson || ''} onChange={handleChange} placeholder="İsim / Unvan" className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-2 text-white text-sm focus:border-blue-500 outline-none" />
                     </div>
+
+                    <div className="col-span-1">
+                        <label className="block text-xs font-medium text-amber-400 mb-1 flex items-center gap-1.5">
+                            <span>Firma Grubu</span>
+                        </label>
+                        <select 
+                            name="group" 
+                            value={formData.group || ''} 
+                            onChange={handleChange} 
+                            className="w-full bg-slate-900 border border-amber-500/40 rounded px-2 py-2 text-white text-sm focus:border-amber-500 outline-none cursor-pointer"
+                        >
+                            <option value="">Grupsuz (Genel)</option>
+                            {firmGroups.map(g => (
+                                <option key={g} value={g}>{g}</option>
+                            ))}
+                        </select>
+                    </div>
                     
                     {/* Firma Adresi (2 Kolon) */}
                     <div className="col-span-1 md:col-span-3">
@@ -818,27 +854,62 @@ const FirmRegistration = () => {
 
       {/* Kayıtlı Firmalar Listesi */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 shadow-xl">
-        <div className="flex justify-between items-center mb-4">
-             <h3 className="text-xl font-bold text-slate-200">Kayıtlı Firmalar</h3>
-             
-             {/* Arama Kutusu */}
-             <div className="relative">
-                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
-                 <input 
-                    type="text" 
-                    placeholder="Firma Ara..." 
-                    value={searchTerm} 
-                    onChange={(e) => setSearchTerm(e.target.value)} 
-                    className="bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2 text-sm text-slate-200 outline-none focus:border-blue-500"
-                 />
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 mb-4">
+             <div className="flex items-center gap-3">
+                 <h3 className="text-xl font-bold text-slate-200">Kayıtlı Firmalar</h3>
+                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-900 text-slate-400 border border-slate-700">
+                     {filteredFirms.length} Firma
+                 </span>
              </div>
+             
+             <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+                 {/* Grup Filtresi */}
+                 <select
+                     value={selectedGroupFilter}
+                     onChange={(e) => setSelectedGroupFilter(e.target.value)}
+                     className="bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-xs text-slate-200 outline-none focus:border-blue-500 cursor-pointer"
+                 >
+                     <option value="ALL">Tüm Gruplar</option>
+                     {firmGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                     <option value="UNGROUPED">Grupsuz Firmalar</option>
+                 </select>
 
-             {selectedFirms.length > 0 && (
-                 <button onClick={handleBulkDelete} className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors animate-in zoom-in">
-                     <Trash2 className="w-4 h-4" />
-                     Seçilenleri Sil ({selectedFirms.length})
-                 </button>
-             )}
+                 {/* Arama Kutusu */}
+                 <div className="relative flex-1 md:w-48">
+                     <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                     <input 
+                        type="text" 
+                        placeholder="Firma Ara..." 
+                        value={searchTerm} 
+                        onChange={(e) => setSearchTerm(e.target.value)} 
+                        className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 outline-none focus:border-blue-500"
+                     />
+                 </div>
+
+                 {selectedFirms.length > 0 && (
+                     <div className="flex items-center gap-1.5 animate-in zoom-in">
+                         <select
+                             onChange={(e) => {
+                                 if (e.target.value) {
+                                     db.assignFirmsToGroup(selectedFirms, e.target.value === '__CLEAR__' ? '' : e.target.value);
+                                     loadFirms();
+                                     e.target.value = '';
+                                 }
+                             }}
+                             className="bg-amber-600 hover:bg-amber-500 text-white font-medium px-3 py-2 rounded-lg text-xs outline-none cursor-pointer shadow-sm"
+                         >
+                             <option value="">Seçilenleri Gruba Ata ({selectedFirms.length})...</option>
+                             {firmGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                             <option value="__CLEAR__">Gruptan Çıkar</option>
+                         </select>
+
+                         <button onClick={handleBulkDelete} className="bg-rose-600 hover:bg-rose-700 text-white px-3 py-2 rounded-lg text-xs flex items-center gap-1 transition-colors shadow-sm">
+                             <Trash2 className="w-3.5 h-3.5" />
+                             Sil ({selectedFirms.length})
+                         </button>
+                     </div>
+                 )}
+             </div>
         </div>
         
         <div className="overflow-hidden">
@@ -867,8 +938,13 @@ const FirmRegistration = () => {
                                 </button>
                             </td>
                             <td className="p-2 text-slate-200 font-medium overflow-hidden">
-                                <div className="truncate" title={firm.name}>
-                                    {firm.name}
+                                <div className="truncate flex items-center gap-1.5" title={firm.name}>
+                                    <span className="truncate">{firm.name}</span>
+                                    {firm.group && (
+                                        <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 shrink-0 font-normal">
+                                            {firm.group}
+                                        </span>
+                                    )}
                                 </div>
                                 {firm.parentFirmId && <span className="text-[9px] text-slate-500 bg-slate-800 px-1 py-0.5 rounded border border-slate-700 mt-1 inline-block">Şube</span>}
                             </td>

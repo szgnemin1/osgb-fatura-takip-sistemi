@@ -436,6 +436,84 @@ export const db = {
 
   saveGlobalSettings: (settings: GlobalSettings) => { setStorage(STORAGE_KEYS.GLOBAL_SETTINGS, settings); },
 
+  // --- DİNAMİK FİRMA GRUPLARI YÖNETİMİ ---
+  getFirmGroups: (): string[] => {
+      const settings = db.getGlobalSettings();
+      if (settings.firmGroups && Array.isArray(settings.firmGroups) && settings.firmGroups.length > 0) {
+          return settings.firmGroups;
+      }
+      return ['Grup 1', 'Grup 2'];
+  },
+
+  saveFirmGroups: (groups: string[]) => {
+      const settings = db.getGlobalSettings();
+      settings.firmGroups = groups;
+      db.saveGlobalSettings(settings);
+  },
+
+  addFirmGroup: (groupName: string): string[] => {
+      const trimmed = groupName.trim();
+      if (!trimmed) return db.getFirmGroups();
+      const current = db.getFirmGroups();
+      if (!current.includes(trimmed)) {
+          const updated = [...current, trimmed];
+          db.saveFirmGroups(updated);
+          return updated;
+      }
+      return current;
+  },
+
+  deleteFirmGroup: (groupName: string): string[] => {
+      let current = db.getFirmGroups();
+      current = current.filter(g => g !== groupName);
+      if (current.length === 0) current = ['Grup 1'];
+      db.saveFirmGroups(current);
+
+      const firms = db.getFirms();
+      let changed = false;
+      const updatedFirms = firms.map(f => {
+          if (f.group === groupName) {
+              changed = true;
+              return { ...f, group: undefined };
+          }
+          return f;
+      });
+      if (changed) db.saveFirms(updatedFirms);
+      return current;
+  },
+
+  renameFirmGroup: (oldName: string, newName: string): string[] => {
+      const trimmed = newName.trim();
+      if (!trimmed || oldName === trimmed) return db.getFirmGroups();
+      const current = db.getFirmGroups();
+      const updated = current.map(g => g === oldName ? trimmed : g);
+      db.saveFirmGroups(updated);
+
+      const firms = db.getFirms();
+      let changed = false;
+      const updatedFirms = firms.map(f => {
+          if (f.group === oldName) {
+              changed = true;
+              return { ...f, group: trimmed };
+          }
+          return f;
+      });
+      if (changed) db.saveFirms(updatedFirms);
+      return updated;
+  },
+
+  assignFirmsToGroup: (firmIds: string[], groupName: string) => {
+      const firms = db.getFirms();
+      const targetGroup = groupName ? groupName.trim() : undefined;
+      const updatedFirms = firms.map(f => {
+          if (firmIds.includes(f.id)) {
+              return { ...f, group: targetGroup || undefined };
+          }
+          return f;
+      });
+      db.saveFirms(updatedFirms);
+  },
+
   getFullBackup: () => ({
       firms: getStorage(STORAGE_KEYS.FIRMS, []),
       transactions: getStorage(STORAGE_KEYS.TRANSACTIONS, []),

@@ -63,6 +63,9 @@ export interface Firm {
   proposedBasePersonLimit?: number;
   proposedBaseFee?: number;
   proposedExtraPersonFee?: number;
+
+  // Firma Gruplama (Grup 1, Grup 2 vb.)
+  group?: string;
 }
 
 export enum TransactionType {
@@ -126,6 +129,7 @@ export interface GlobalSettings {
     companyLogo?: string;
     quoteIntroTemplate?: string;
     quoteFooterTemplate?: string; // YENİ: Sadeleştirilmiş Borç Modu
+    firmGroups?: string[]; // Dinamik Firma Grupları (Grup 1, Grup 2 vb.)
 }
 
 export interface LogEntry {

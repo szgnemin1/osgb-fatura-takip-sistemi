@@ -2,9 +2,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
-import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare, Download, Loader2, CheckCircle2, Building2 } from 'lucide-react';
+import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare, Download, Loader2, CheckCircle2, Building2, Folder, Settings, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
+import { GroupManagerModal } from '../components/GroupManagerModal';
 
 const Preparation = () => {
   const navigate = useNavigate();
@@ -15,6 +16,11 @@ const Preparation = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [globalSettings, setGlobalSettings] = useState<GlobalSettings | null>(null);
   
+  // Firma Grupları State'leri
+  const [groups, setGroups] = useState<string[]>([]);
+  const [selectedGroup, setSelectedGroup] = useState<string>('ALL');
+  const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
+
   // Filtre State'leri
   const [filterType, setFilterType] = useState<'ALL' | InvoiceType>('ALL');
   const [uploadedFirmIds, setUploadedFirmIds] = useState<string[]>([]); // Excel'den gelen ID'leri tutar
@@ -52,6 +58,7 @@ const Preparation = () => {
   const loadData = React.useCallback(() => {
     const f = db.getFirms();
     setFirms(f);
+    setGroups(db.getFirmGroups());
     setGlobalSettings(db.getGlobalSettings());
     
     const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s:any) => !s.isBilled) : [];
@@ -476,19 +483,31 @@ const Preparation = () => {
     const matchesSearch = safeName.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesType = filterType === 'ALL' || f.defaultInvoiceType === filterType;
     const matchesUpload = uploadedFirmIds.length > 0 ? uploadedFirmIds.includes(f.id) : true;
-    return matchesSearch && matchesType && matchesUpload;
+    const matchesGroup = selectedGroup === 'ALL'
+      ? true
+      : (selectedGroup === 'UNGROUPED' ? !f.group : f.group === selectedGroup);
+    return matchesSearch && matchesType && matchesUpload && matchesGroup;
   });
 
   // --- EXCEL ŞABLON İNDİR ---
   const handleDownloadPrepTemplate = (targetType: InvoiceType) => {
-    const firmsToExport = firms.filter(f => f.defaultInvoiceType === targetType);
+    let firmsToExport = firms.filter(f => f.defaultInvoiceType === targetType);
+    if (selectedGroup !== 'ALL') {
+        if (selectedGroup === 'UNGROUPED') {
+            firmsToExport = firmsToExport.filter(f => !f.group);
+        } else {
+            firmsToExport = firmsToExport.filter(f => f.group === selectedGroup);
+        }
+    }
+
     if (firmsToExport.length === 0) {
-        alert(`Bu tipte (${targetType}) kayıtlı firma bulunamadı.`);
+        alert(`${selectedGroup !== 'ALL' ? `"${selectedGroup}" grubunda ` : ''}bu tipte (${targetType}) kayıtlı firma bulunamadı.`);
         return;
     }
     const data = firmsToExport.map(f => ({
         "Firma ID (DOKUNMAYIN)": f.id,
         "Firma Adı": f.name,
+        "Grup": f.group || 'Grupsuz',
         "Fatura Tipi": f.defaultInvoiceType,
         "Mevcut Limit": f.basePersonLimit,
         "Çalışan Sayısı (GİRİNİZ)": items[f.id]?.currentEmployeeCount || f.basePersonLimit,
@@ -496,7 +515,8 @@ const Preparation = () => {
     }));
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
-    const fileName = targetType === InvoiceType.E_FATURA ? 'E-Fatura_Hazirlik_Sablonu' : 'E-Arsiv_Hazirlik_Sablonu';
+    const groupSuffix = selectedGroup !== 'ALL' ? `_${selectedGroup.replace(/\s+/g, '_')}` : '';
+    const fileName = targetType === InvoiceType.E_FATURA ? `E-Fatura${groupSuffix}_Hazirlik_Sablonu` : `E-Arsiv${groupSuffix}_Hazirlik_Sablonu`;
     XLSX.utils.book_append_sheet(workbook, worksheet, "Hazirlik_Listesi");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toLocaleDateString('tr-TR')}.xlsx`);
   };
@@ -1005,47 +1025,145 @@ const Preparation = () => {
       </header>
       
       {/* ARAÇ ÇUBUĞU */}
-      <div className="flex flex-col xl:flex-row items-stretch xl:items-center gap-2 bg-slate-800 p-2 rounded-xl border border-slate-700 shadow-lg">
-           <div className="flex flex-col gap-2 flex-[2]">
-                <div className="flex flex-col md:flex-row gap-2">
-                    <div className="relative flex-1">
-                            <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
-                            <input type="text" placeholder="Firma Ara..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500" />
-                    </div>
-                    <div className="relative w-full md:w-48">
-                        <Filter className="absolute left-3 top-3 w-4 h-4 text-slate-500 pointer-events-none" />
-                        <select 
-                            value={filterType}
-                            onChange={(e) => setFilterType(e.target.value as any)}
-                            className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500 cursor-pointer appearance-none"
-                        >
-                            <option value="ALL">Tümü</option>
-                            <option value={InvoiceType.E_FATURA}>E-Faturalar</option>
-                            <option value={InvoiceType.E_ARSIV}>E-Arşivler</option>
-                        </select>
-                    </div>
+      <div className="flex flex-col gap-2.5 bg-slate-800 p-2.5 rounded-xl border border-slate-700 shadow-lg">
+           {/* Üst Satır: Arama + Fatura Tipi Filtresi + Şablon & Yükle Butonları */}
+           <div className="flex flex-col xl:flex-row items-stretch xl:items-center gap-2">
+                <div className="flex flex-col gap-2 flex-[2]">
+                     <div className="flex flex-col md:flex-row gap-2">
+                         <div className="relative flex-1">
+                                 <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
+                                 <input type="text" placeholder="Firma Ara..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500" />
+                         </div>
+                         <div className="relative w-full md:w-48">
+                             <Filter className="absolute left-3 top-3 w-4 h-4 text-slate-500 pointer-events-none" />
+                             <select 
+                                 value={filterType}
+                                 onChange={(e) => setFilterType(e.target.value as any)}
+                                 className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2.5 text-sm text-slate-200 outline-none focus:border-blue-500 cursor-pointer appearance-none"
+                             >
+                                 <option value="ALL">Tüm Fatura Tipleri</option>
+                                 <option value={InvoiceType.E_FATURA}>E-Faturalar</option>
+                                 <option value={InvoiceType.E_ARSIV}>E-Arşivler</option>
+                             </select>
+                         </div>
+                     </div>
+
+                     {uploadedFirmIds.length > 0 && (
+                         <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/30 p-2 rounded-lg animate-in fade-in slide-in-from-top-2">
+                             <div className="flex items-center gap-2 text-blue-400 text-sm">
+                                 <ListFilter className="w-4 h-4" />
+                                 <span>Excel'den yüklenen <b>{uploadedFirmIds.length}</b> firma görüntüleniyor.</span>
+                             </div>
+                             <button onClick={handleClearUploadFilter} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded border border-slate-600 flex items-center gap-1 transition-colors">
+                                 <XCircle className="w-3 h-3" /> Filtreyi Temizle
+                             </button>
+                         </div>
+                     )}
+                </div>
+                
+                <div className="flex flex-col md:flex-row gap-2 xl:justify-end flex-1">
+                     <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_FATURA)} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-indigo-500 shadow-sm"><FileSpreadsheet className="w-4 h-4" /> E-Fatura Şablon</button>
+                     <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_ARSIV)} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-orange-500 shadow-sm"><FileSpreadsheet className="w-4 h-4" /> E-Arşiv Şablon</button>
+                     <div className="relative flex-1">
+                         <input type="file" ref={fileInputRef} onChange={handleUploadPrepData} accept=".xlsx, .xls" className="hidden" />
+                         <button onClick={() => fileInputRef.current?.click()} className="w-full h-full bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 border border-slate-600 transition-colors shadow-sm"><Upload className="w-4 h-4" /> Veri Yükle</button>
+                     </div>
+                </div>
+           </div>
+
+           {/* Alt Satır: FİRMA GRUPLARI SEÇİCİ & YÖNETİMİ (Grup 1, Grup 2, +, ⚙️) */}
+           <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-700/60">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300 mr-1 shrink-0">
+                    <Folder className="w-4 h-4 text-amber-400" />
+                    <span>Gruplar:</span>
                 </div>
 
-                {uploadedFirmIds.length > 0 && (
-                    <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/30 p-2 rounded-lg animate-in fade-in slide-in-from-top-2">
-                        <div className="flex items-center gap-2 text-blue-400 text-sm">
-                            <ListFilter className="w-4 h-4" />
-                            <span>Excel'den yüklenen <b>{uploadedFirmIds.length}</b> firma görüntüleniyor.</span>
-                        </div>
-                        <button onClick={handleClearUploadFilter} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded border border-slate-600 flex items-center gap-1 transition-colors">
-                            <XCircle className="w-3 h-3" /> Filtreyi Temizle
+                {/* Tümü Butonu */}
+                <button
+                    type="button"
+                    onClick={() => setSelectedGroup('ALL')}
+                    className={`px-3 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1.5 border ${
+                        selectedGroup === 'ALL'
+                            ? 'bg-blue-600 text-white border-blue-500 font-bold shadow-md shadow-blue-900/30'
+                            : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                    }`}
+                >
+                    <span>Tümü</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300 font-mono">
+                        {firms.length}
+                    </span>
+                </button>
+
+                {/* Dinamik Grup Butonları (Grup 1, Grup 2, ...) */}
+                {groups.map(groupName => {
+                    const count = firms.filter(f => f.group === groupName).length;
+                    const isActive = selectedGroup === groupName;
+                    return (
+                        <button
+                            key={groupName}
+                            type="button"
+                            onClick={() => setSelectedGroup(groupName)}
+                            className={`px-3 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1.5 border ${
+                                isActive
+                                    ? 'bg-amber-600 text-white border-amber-500 font-bold shadow-md shadow-amber-900/30'
+                                    : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                            }`}
+                        >
+                            <span>{groupName}</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isActive ? 'bg-amber-800 text-amber-100' : 'bg-slate-800 text-slate-400'}`}>
+                                {count}
+                            </span>
                         </button>
-                    </div>
+                    );
+                })}
+
+                {/* Grupsuz Firmalar Butonu */}
+                {firms.some(f => !f.group) && (
+                    <button
+                        type="button"
+                        onClick={() => setSelectedGroup('UNGROUPED')}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1 border ${
+                            selectedGroup === 'UNGROUPED'
+                                ? 'bg-slate-700 text-white border-slate-500 font-bold'
+                                : 'bg-slate-900/70 text-slate-400 border-slate-750 hover:text-slate-200'
+                        }`}
+                        title="Henüz bir gruba atanmamış firmalar"
+                    >
+                        <span>Grupsuz</span>
+                        <span className="text-[10px] px-1.5 rounded-full bg-slate-800 text-slate-400 font-mono">
+                            {firms.filter(f => !f.group).length}
+                        </span>
+                    </button>
                 )}
-           </div>
-           
-           <div className="flex flex-col md:flex-row gap-2 xl:justify-end flex-1">
-                <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_FATURA)} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-indigo-500"><FileSpreadsheet className="w-4 h-4" /> E-Fatura Şablon</button>
-                <button onClick={() => handleDownloadPrepTemplate(InvoiceType.E_ARSIV)} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors border border-orange-500"><FileSpreadsheet className="w-4 h-4" /> E-Arşiv Şablon</button>
-                <div className="relative flex-1">
-                    <input type="file" ref={fileInputRef} onChange={handleUploadPrepData} accept=".xlsx, .xls" className="hidden" />
-                    <button onClick={() => fileInputRef.current?.click()} className="w-full h-full bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-2.5 rounded-lg flex items-center justify-center gap-2 border border-slate-600 transition-colors"><Upload className="w-4 h-4" /> Veri Yükle</button>
-                </div>
+
+                {/* Hızlı Yeni Grup Ekle Butonu (+) */}
+                <button
+                    type="button"
+                    onClick={() => {
+                        const name = window.prompt("Yeni oluşturulacak grup adını giriniz (Örn: Grup 3, Organize Sanayi):");
+                        if (name && name.trim()) {
+                            const updated = db.addFirmGroup(name.trim());
+                            setGroups(updated);
+                            setSelectedGroup(name.trim());
+                        }
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/40 transition-colors flex items-center gap-1 text-xs font-semibold shadow-sm"
+                    title="Yeni Grup Ekle (+)"
+                >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Yeni Grup</span>
+                </button>
+
+                {/* Grupları Düzenleme Çarkı (⚙️) */}
+                <button
+                    type="button"
+                    onClick={() => setIsGroupModalOpen(true)}
+                    className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white border border-slate-600 transition-colors flex items-center gap-1.5 text-xs font-semibold ml-auto"
+                    title="Grupları Düzenle ve Firmaları Yönet (⚙️)"
+                >
+                    <Settings className="w-4 h-4 text-amber-400" />
+                    <span>Grup Yönetimi</span>
+                </button>
            </div>
       </div>
 
@@ -1189,6 +1307,11 @@ const Preparation = () => {
                         <div className="flex items-center gap-2 truncate">
                             {financials.isBranch && <Network className="w-3 h-3 sm:w-4 sm:h-4 text-slate-500 rotate-90" />}
                             <span className="truncate text-xs sm:text-sm" title={firm.name}>{firm.name}</span>
+                            {firm.group && (
+                                <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 shrink-0 font-medium">
+                                    {firm.group}
+                                </span>
+                            )}
                         </div>
                         <div className="text-[9px] sm:text-[10px] text-slate-500 flex items-center gap-1 sm:ml-6 mt-0.5 truncate">
                             {financials.isBranch ? 'Şube' : (
@@ -1535,6 +1658,16 @@ const Preparation = () => {
               </div>
           </div>
       )}
+
+      {/* Firma Grupları Yönetim Modalı */}
+      <GroupManagerModal
+          isOpen={isGroupModalOpen}
+          onClose={() => setIsGroupModalOpen(false)}
+          onGroupsUpdated={() => {
+              setGroups(db.getFirmGroups());
+              setFirms(db.getFirms());
+          }}
+      />
 
     </div>
   );
