@@ -127,6 +127,26 @@ const authLimiter = rateLimit({
 });
 app.use('/api/login', authLimiter);
 
+// Mutabakat Portalı Hız Sınırlaması (Token Brute-Force & DoS Önleme)
+const reconciliationLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Çok fazla istek yapıldı. Sistem güvenliği için lütfen 15 dakika bekleyiniz.' }
+});
+app.use('/mutabakat/', reconciliationLimiter);
+app.use('/api/mutabakat/', reconciliationLimiter);
+
+// Test E-postası Hız Sınırlaması (Spam & Relay Saldırısı Önleme)
+const smtpTestLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Çok fazla test e-postası gönderildi. Lütfen 10 dakika sonra tekrar deneyiniz.' }
+});
+
 app.use(cors(corsOptions));
 app.use(bodyParser.json({ limit: '50mb' }));
 
@@ -444,6 +464,18 @@ async function createDatabaseBackup() {
         created_at TEXT,
         updated_at TEXT
     );`);
+
+    // SMTP Parolasını AES-256-GCM ile diskte şifrele (Migration)
+    try {
+        const currentSmtp = await db.get("SELECT id, pass FROM smtp_settings WHERE id = 1");
+        if (currentSmtp && currentSmtp.pass && !currentSmtp.pass.startsWith('enc_gcm:')) {
+            const encPass = encryptSecret(currentSmtp.pass.replace(/\s+/g, ''));
+            await db.run("UPDATE smtp_settings SET pass = ? WHERE id = 1", [encPass]);
+            console.log('[Güvenlik] Mevcut SMTP parolası AES-256-GCM ile diskte şifrelendi.');
+        }
+    } catch (smtpEncErr) {
+        console.error('[Güvenlik] SMTP parola şifreleme migration hatası:', smtpEncErr);
+    }
 
     // Reconciliations Tablosu Migrasyonları (email ve sent_channels)
     try {
@@ -1851,18 +1883,55 @@ app.get('/api/batches/terminal/:code', async (req, res) => {
     }
 });
 
-// 5.5 Terminalden "Kestim / Onayla" (Tekli veya Toplu - Anında Cariye İşleme)
+// 5.5 Terminalden "Kestim / Onayla" (Tekli veya Toplu - Operatör Yetki & PIN Korumalı)
 app.post('/api/batches/terminal/approve', async (req, res) => {
     try {
+        const clientIp = getClientIp(req);
+        const termLock = checkTerminalLockout(clientIp);
+        if (termLock.isLocked) {
+            return res.status(429).json({ error: `Çok fazla hatalı kod denemesi yapıldı. Terminal erişiminiz ${termLock.remainingMinutes} dakika kilitlendi.` });
+        }
+
         const { code, transactionId, transactionIds } = req.body;
+        const cleanCode = code ? String(code).trim() : '';
         const ids = transactionIds && Array.isArray(transactionIds)
             ? transactionIds
             : (transactionId ? [transactionId] : []);
 
-        if (!code || ids.length === 0) return res.status(400).json({ error: 'Eksik parametre' });
+        if (!cleanCode || ids.length === 0) return res.status(400).json({ error: 'Eksik parametre' });
+
+        // Operatör kodu doğrulama
+        const rows = await db.all("SELECT id, data FROM invoice_batches ORDER BY id DESC LIMIT 5");
+        let matchedOperator = null;
+        for (const r of rows) {
+            try {
+                const b = JSON.parse(r.data);
+                if (b.active && Array.isArray(b.operators)) {
+                    const op = b.operators.find(o => String(o.code) === cleanCode || (o.previousCodes && o.previousCodes.map(String).includes(cleanCode)));
+                    if (op) {
+                        matchedOperator = op;
+                        break;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (!matchedOperator) {
+            const failStat = recordTerminalFailure(clientIp);
+            return res.status(403).json({ error: `Geçersiz operatör kodu. Kalan deneme hakkı: ${failStat.remainingAttempts}` });
+        }
+
+        clearTerminalFailure(clientIp);
+
+        // Operatörün sadece kendi yetkisindeki faturaları onaylayabilmesi kontrolü
+        const allowedIds = new Set(matchedOperator.invoiceIds || []);
+        const validIds = ids.filter(id => allowedIds.has(id));
+        if (validIds.length === 0) {
+            return res.status(403).json({ error: 'Bu fatura(lar) üzerinde işlem yapma yetkiniz bulunmamaktadır.' });
+        }
 
         await db.run('BEGIN IMMEDIATE TRANSACTION');
-        for (const id of ids) {
+        for (const id of validIds) {
             const txRow = await db.get("SELECT data FROM transactions WHERE id = ?", id);
             if (txRow) {
                 const t = JSON.parse(txRow.data);
@@ -1872,11 +1941,11 @@ app.post('/api/batches/terminal/approve', async (req, res) => {
         }
         await db.run('COMMIT');
 
-        io.emit('transaction_approved', { ids });
+        io.emit('transaction_approved', { ids: validIds });
         io.emit('batch_updated');
         io.emit('db_updated');
 
-        res.json({ success: true, count: ids.length, message: 'Fatura(lar) onaylandı ve cariye işlendi.' });
+        res.json({ success: true, count: validIds.length, message: 'Fatura(lar) onaylandı ve cariye işlendi.' });
     } catch (e) {
         try { await db.run('ROLLBACK'); } catch (_) {}
         console.error('Terminal approve error:', e);
@@ -1884,11 +1953,46 @@ app.post('/api/batches/terminal/approve', async (req, res) => {
     }
 });
 
-// 5.6 Terminalden "Onayı Geri Al / Bekleyene Al" (Yanlışlıkla Tıklanırsa)
+// 5.6 Terminalden "Onayı Geri Al / Bekleyene Al" (Yanlışlıkla Tıklanırsa - Yetki Korumalı)
 app.post('/api/batches/terminal/unapprove', async (req, res) => {
     try {
+        const clientIp = getClientIp(req);
+        const termLock = checkTerminalLockout(clientIp);
+        if (termLock.isLocked) {
+            return res.status(429).json({ error: `Çok fazla hatalı kod denemesi yapıldı. Terminal erişiminiz ${termLock.remainingMinutes} dakika kilitlendi.` });
+        }
+
         const { code, transactionId } = req.body;
-        if (!code || !transactionId) return res.status(400).json({ error: 'Eksik parametre' });
+        const cleanCode = code ? String(code).trim() : '';
+        if (!cleanCode || !transactionId) return res.status(400).json({ error: 'Eksik parametre' });
+
+        // Operatör kodu doğrulama
+        const rows = await db.all("SELECT id, data FROM invoice_batches ORDER BY id DESC LIMIT 5");
+        let matchedOperator = null;
+        for (const r of rows) {
+            try {
+                const b = JSON.parse(r.data);
+                if (b.active && Array.isArray(b.operators)) {
+                    const op = b.operators.find(o => String(o.code) === cleanCode || (o.previousCodes && o.previousCodes.map(String).includes(cleanCode)));
+                    if (op) {
+                        matchedOperator = op;
+                        break;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        if (!matchedOperator) {
+            const failStat = recordTerminalFailure(clientIp);
+            return res.status(403).json({ error: `Geçersiz operatör kodu. Kalan deneme hakkı: ${failStat.remainingAttempts}` });
+        }
+
+        clearTerminalFailure(clientIp);
+
+        const allowedIds = new Set(matchedOperator.invoiceIds || []);
+        if (!allowedIds.has(transactionId)) {
+            return res.status(403).json({ error: 'Bu fatura üzerinde işlem yapma yetkiniz bulunmamaktadır.' });
+        }
 
         const txRow = await db.get("SELECT data FROM transactions WHERE id = ?", transactionId);
         if (!txRow) return res.status(404).json({ error: 'Fatura bulunamadı' });
@@ -1902,6 +2006,7 @@ app.post('/api/batches/terminal/unapprove', async (req, res) => {
 
         res.json({ success: true, message: 'Fatura tekrar bekleyenlere alındı.' });
     } catch (e) {
+        console.error('Terminal unapprove error:', e);
         res.status(500).json({ error: 'Hata' });
     }
 });
@@ -3511,11 +3616,12 @@ async function getSmtpSettings() {
 
 function createMailTransporter(settings) {
     if (!settings || !settings.host || !settings.user) return null;
-    const cleanUser = settings.user ? settings.user.trim() : '';
-    const cleanPass = settings.pass ? settings.pass.replace(/\s+/g, '') : '';
+    const cleanUser = settings.user ? settings.user.replace(/[\r\n\t]/g, '').trim() : '';
+    const rawPass = settings.pass ? (decryptSecret(settings.pass) || settings.pass) : '';
+    const cleanPass = rawPass ? rawPass.replace(/\s+/g, '') : '';
 
     return nodemailer.createTransport({
-        host: settings.host ? settings.host.trim() : '',
+        host: settings.host ? settings.host.replace(/[\r\n\t]/g, '').trim() : '',
         port: Number(settings.port) || 587,
         secure: Number(settings.secure) === 1 || Number(settings.port) === 465,
         auth: {
@@ -3534,8 +3640,9 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
         throw new Error('E-posta (SMTP) sunucu ayarları yapılandırılmamış. Lütfen SMTP Ayarları menüsünden bilgilerinizi kaydedin.');
     }
 
-    const targetEmail = (rec.email || firm.email || '').trim();
-    if (!targetEmail || !targetEmail.includes('@')) {
+    const targetEmail = (rec.email || firm.email || '').replace(/[\r\n\t]/g, '').trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!targetEmail || !emailRegex.test(targetEmail)) {
         throw new Error(`"${firm.name}" firmasına ait geçerli bir e-posta adresi bulunamadı.`);
     }
 
@@ -3664,16 +3771,18 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
     </html>
     `;
 
-    const fromAddress = smtp.from_address || `"OSGB ProFinans" <${smtp.user}>`;
+    const rawFrom = smtp.from_address || `"OSGB ProFinans" <${smtp.user}>`;
+    const fromAddress = rawFrom.replace(/[\r\n\t]/g, '').trim();
+    const safeAttachmentFilename = filename ? filename.replace(/[^\w.-]/g, '_') : 'mutabakat.pdf';
 
     const mailOptions = {
         from: fromAddress,
         to: targetEmail,
-        subject: `Cari Hesap Mutabakat Mektubu - ${rec.period} - ${firm.name}`,
+        subject: `Cari Hesap Mutabakat Mektubu - ${rec.period} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
         html: htmlContent,
         attachments: [
             {
-                filename: filename,
+                filename: safeAttachmentFilename,
                 content: pdfBuffer,
                 contentType: 'application/pdf'
             }
@@ -3804,7 +3913,7 @@ app.get('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) =>
     }
 });
 
-// SMTP Ayarlarını Kaydet
+// SMTP Ayarlarını Kaydet (AES-256-GCM Şifrelemeli)
 app.post('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
@@ -3816,36 +3925,42 @@ app.post('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) =
         if ((!pass || pass === '********') && current && current.pass) {
             finalPass = current.pass;
         } else if (pass) {
-            finalPass = pass.replace(/\s+/g, '');
+            finalPass = encryptSecret(pass.replace(/\s+/g, ''));
         }
+
+        const cleanHost = host ? host.replace(/[\r\n\t]/g, '').trim() : '';
+        const cleanUser = user ? user.replace(/[\r\n\t]/g, '').trim() : '';
+        const cleanFrom = from_address ? from_address.replace(/[\r\n\t]/g, '').trim() : '';
+        const cleanPort = Number(port) || 587;
 
         if (current) {
             await db.run(
                 `UPDATE smtp_settings 
                  SET host = ?, port = ?, secure = ?, user = ?, pass = ?, from_address = ?, updated_at = ? 
                  WHERE id = 1`,
-                [host?.trim(), Number(port) || 587, secure ? 1 : 0, user?.trim(), finalPass, from_address?.trim(), now]
+                [cleanHost, cleanPort, secure ? 1 : 0, cleanUser, finalPass, cleanFrom, now]
             );
         } else {
             await db.run(
                 `INSERT INTO smtp_settings (id, host, port, secure, user, pass, from_address, created_at, updated_at) 
                  VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [host?.trim(), Number(port) || 587, secure ? 1 : 0, user?.trim(), finalPass, from_address?.trim(), now, now]
+                [cleanHost, cleanPort, secure ? 1 : 0, cleanUser, finalPass, cleanFrom, now, now]
             );
         }
 
-        await logAuditEvent(req, 'SMTP_CONFIG_UPDATED', { host, user, port }, 'SUCCESS');
+        await logAuditEvent(req, 'SMTP_CONFIG_UPDATED', { host: cleanHost, user: cleanUser, port: cleanPort }, 'SUCCESS');
         res.json({ success: true, message: 'SMTP ayarları başarıyla kaydedildi.' });
     } catch (e) {
         res.status(500).json({ error: 'SMTP ayarları kaydedilemedi: ' + e.message });
     }
 });
 
-// Test E-Postası Gönder
-app.post('/api/smtp/test', authenticateToken, requireAdmin, async (req, res) => {
+// Test E-Postası Gönder (Hız Sınırlamalı & CRLF Korumalı)
+app.post('/api/smtp/test', authenticateToken, requireAdmin, smtpTestLimiter, async (req, res) => {
     try {
-        const { toEmail } = req.body;
-        if (!toEmail || !toEmail.includes('@')) {
+        const rawEmail = (req.body.toEmail || '').replace(/[\r\n\t]/g, '').trim();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!rawEmail || !emailRegex.test(rawEmail)) {
             return res.status(400).json({ error: 'Geçerli bir test alıcı e-posta adresi giriniz.' });
         }
 
@@ -3855,11 +3970,12 @@ app.post('/api/smtp/test', authenticateToken, requireAdmin, async (req, res) => 
         }
 
         const transporter = createMailTransporter(smtp);
-        const fromAddress = smtp.from_address || `"OSGB Test" <${smtp.user}>`;
+        const rawFrom = smtp.from_address || `"OSGB Test" <${smtp.user}>`;
+        const fromAddress = rawFrom.replace(/[\r\n\t]/g, '').trim();
 
         await transporter.sendMail({
             from: fromAddress,
-            to: toEmail.trim(),
+            to: rawEmail,
             subject: 'OSGB ProFinans - SMTP Bağlantı Testi',
             html: `
                 <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; max-width: 500px;">
@@ -3870,7 +3986,7 @@ app.post('/api/smtp/test', authenticateToken, requireAdmin, async (req, res) => 
             `
         });
 
-        res.json({ success: true, message: `Test e-postası başarıyla "${toEmail}" adresine iletildi.` });
+        res.json({ success: true, message: `Test e-postası başarıyla "${rawEmail}" adresine iletildi.` });
     } catch (e) {
         console.error('SMTP test hatası:', e);
         let errorMsg = e.message || 'Bilinmeyen hata';
@@ -4197,11 +4313,18 @@ app.post('/api/reconciliation/reset/:id', authenticateToken, requireAdmin, async
 // MÜŞTERİ ONLİNE MUTABAKAT ONAY VE İNCELEME SAYFASI (PUBLIC)
 // =========================================================================
 
+// Güvenli Token Doğrulama Formatı (32 Karakter Hex)
+const RECONCILIATION_TOKEN_REGEX = /^[a-fA-F0-9]{32}$/;
+
 // Müşteri PDF İndirme (Public / Token Korumalı)
 app.get('/mutabakat/:token/pdf', async (req, res) => {
     try {
         if (!db) return res.status(500).send('Veritabanı hazır değil.');
         const { token } = req.params;
+        if (!token || !RECONCILIATION_TOKEN_REGEX.test(token)) {
+            return res.status(400).send('Geçersiz mutabakat bağlantısı formatı.');
+        }
+
         const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
         if (!rec) return res.status(404).send('Geçersiz veya süresi dolmuş mutabakat bağlantısı.');
 
@@ -4222,15 +4345,52 @@ app.get('/mutabakat/:token/pdf', async (req, res) => {
     }
 });
 
-// Müşteri Onay Yanıt API (Public / Token Korumalı)
+// Müşteri Onay Yanıt API (Public / Token Korumalı / Katı Doğrulama)
 app.post('/api/mutabakat/public-respond', async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
         const { token, status, responseBalance, responseNote, responderName, responderTitle } = req.body;
-        if (!token || !status) return res.status(400).json({ error: 'Eksik parametre.' });
+        
+        if (!token || !RECONCILIATION_TOKEN_REGEX.test(token)) {
+            return res.status(400).json({ error: 'Geçersiz mutabakat anahtarı formatı.' });
+        }
+
+        if (status !== 'MUTABIK' && status !== 'FARK_VAR') {
+            return res.status(400).json({ error: 'Geçersiz mutabakat yanıt durumu.' });
+        }
+
+        // Yetkili Adı & Görevi Zorunlu Kontrolleri ve Temizleme
+        const cleanName = responderName ? String(responderName).replace(/[\r\n\t]/g, ' ').trim() : '';
+        const cleanTitle = responderTitle ? String(responderTitle).replace(/[\r\n\t]/g, ' ').trim() : '';
+        if (!cleanName || cleanName.length < 2 || cleanName.length > 100) {
+            return res.status(400).json({ error: 'Lütfen geçerli bir ad ve soyad giriniz (2 - 100 karakter).' });
+        }
+        if (!cleanTitle || cleanTitle.length < 2 || cleanTitle.length > 100) {
+            return res.status(400).json({ error: 'Lütfen şirketteki görevinizi / unvanınızı giriniz (2 - 100 karakter).' });
+        }
+
+        let cleanNote = null;
+        let cleanBalance = null;
+        if (status === 'FARK_VAR') {
+            cleanNote = responseNote ? String(responseNote).replace(/[\r\t]/g, '').trim() : '';
+            if (!cleanNote || cleanNote.length < 2 || cleanNote.length > 1000) {
+                return res.status(400).json({ error: 'Lütfen farkın nedenini belirten bir açıklama giriniz (en fazla 1000 karakter).' });
+            }
+            if (responseBalance !== undefined && responseBalance !== null && responseBalance !== '') {
+                const num = Number(responseBalance);
+                if (Number.isFinite(num) && Math.abs(num) <= 1e9) {
+                    cleanBalance = num;
+                }
+            }
+        }
 
         const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
         if (!rec) return res.status(404).json({ error: 'Geçersiz veya süresi dolmuş mutabakat bağlantısı.' });
+
+        // Onaylanmış mutabakatı değiştirilmeye karşı koruma
+        if (rec.status === 'APPROVED') {
+            return res.status(400).json({ error: 'Bu mutabakat daha önce resmi olarak onaylanmıştır ve üzerinde değişiklik yapılamaz.' });
+        }
 
         const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Bilinmiyor';
         const now = new Date().toISOString();
@@ -4242,18 +4402,15 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
              SET status = ?, response_status = ?, response_balance = ?, response_note = ?, 
                  responder_name = ?, responder_title = ?, response_at = ?, client_ip = ?, updated_at = ?
              WHERE token = ?`,
-            [dbStatus, status, responseBalance ? Number(responseBalance) : null, responseNote || null,
-             responderName ? String(responderName).trim() : null,
-             responderTitle ? String(responderTitle).trim() : null,
-             now, clientIp, now, token]
+            [dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, now, clientIp, now, token]
         );
 
         io.emit('mutabakat_response_received', {
             token,
             status: dbStatus,
             firmId: rec.firm_id,
-            responderName: responderName?.trim(),
-            responderTitle: responderTitle?.trim()
+            responderName: cleanName,
+            responderTitle: cleanTitle
         });
 
         res.json({ success: true, message: 'Yanıtınız başarıyla kaydedildi. Teşekkür ederiz.' });
@@ -4268,6 +4425,10 @@ app.get('/mutabakat/:token', async (req, res) => {
     try {
         if (!db) return res.status(500).send('Veritabanı hazır değil.');
         const { token } = req.params;
+        if (!token || !RECONCILIATION_TOKEN_REGEX.test(token)) {
+            return res.status(400).send('Geçersiz mutabakat bağlantısı formatı.');
+        }
+
         const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
         if (!rec) {
             return res.status(404).send(`
