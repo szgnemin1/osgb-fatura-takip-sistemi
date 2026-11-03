@@ -2719,7 +2719,8 @@ function generateFirmStatementPDF(firm, transactions) {
             4: { cellWidth: 32, halign: 'right' }
         },
         theme: 'grid',
-        margin: { top: 10, left: 14, right: 14 },
+        margin: { top: 10, bottom: 20, left: 14, right: 14 },
+        pageBreak: 'auto',
         foot: [[
             'TOPLAM',
             '',
@@ -3456,15 +3457,28 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
     doc.setDrawColor(203, 213, 225);
     doc.line(14, 28, 196, 28);
 
+    let currentY = 35;
+
+    // Sağ Üst: Tarih ve Dönem Bilgisi
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Tarih: ${new Date().toLocaleDateString('tr-TR')}`, 196, currentY, { align: 'right' });
+    doc.text(`Donem: ${replaceTR(period || '-')}`, 196, currentY + 5, { align: 'right' });
+
+    // Sol Üst: Sayın Yetkili ve Firma Adı (Genişliği sınırlanarak sağ taraftaki Tarih ile çakışması önlenir)
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(9.5);
     doc.setTextColor(30, 41, 59);
-    doc.setFont("helvetica", "bold");
-    doc.text("Sayin Yetkili,", 14, 36);
-    doc.text(replaceTR(firm.name || 'Firma'), 14, 42);
+    doc.text("Sayin Yetkili,", 14, currentY);
 
-    doc.setFont("helvetica", "normal");
-    doc.text(`Tarih: ${new Date().toLocaleDateString('tr-TR')}`, 196, 36, { align: 'right' });
-    doc.text(`Donem: ${replaceTR(period)}`, 196, 42, { align: 'right' });
+    currentY += 5.5;
+    const firmName = replaceTR(firm.name || 'Firma');
+    const firmNameLines = doc.splitTextToSize(firmName, 120);
+    doc.text(firmNameLines, 14, currentY);
+
+    // Firma adının satır sayısına göre dinamik alt boşluk
+    currentY += (firmNameLines.length * 4.5) + 5;
 
     const balanceNum = Number(balance) || 0;
     let bakiyeMetni = "0.00 TL ile HESABIMIZ DENK";
@@ -3474,42 +3488,49 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
         bakiyeMetni = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL SIRKETIMIZDEN ALACAKLI`;
     }
 
+    doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(51, 65, 85);
-    const introText = 
-        `Sirketimiz nezdindeki cari hesap kayitlarimiza gore, yukarida belirtilen donem sonu itibariyle ` +
-        `firmanizin hesabinda ${bakiyeMetni} bakiye bulunmaktadir.\n\n` +
-        `Kayitlarinizin tetkik edilerek tarafimiza mutabakat durumunuzun bildirilmesini rica ederiz. ` +
-        `Hesap ekstreniz asagida ozetlenmistir:`;
 
-    const splitIntro = doc.splitTextToSize(introText, 182);
-    doc.text(splitIntro, 14, 50);
+    const p1 = `Sirketimiz nezdindeki cari hesap kayitlarimiza gore, yukarida belirtilen donem sonu itibariyle firmanizin hesabinda ${bakiyeMetni} bakiye bulunmaktadir.`;
+    const linesP1 = doc.splitTextToSize(p1, 182);
+    doc.text(linesP1, 14, currentY);
+    currentY += (linesP1.length * 4.5) + 3;
 
-    const afterIntroY = 50 + (splitIntro.length * 4.5);
+    const p2 = `Kayitlarinizin tetkik edilerek tarafimiza mutabakat durumunuzun bildirilmesini rica ederiz. Hesap ekstreniz asagida ozetlenmistir:`;
+    const linesP2 = doc.splitTextToSize(p2, 182);
+    doc.text(linesP2, 14, currentY);
+    currentY += (linesP2.length * 4.5) + 5;
 
-    // Finansal Kutu
+    // Finansal Özet Kutusu
+    const boxY = currentY;
+    const boxHeight = 18;
     doc.setFillColor(248, 250, 252);
-    doc.roundedRect(14, afterIntroY, 182, 17, 2, 2, 'FD');
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(14, boxY, 182, boxHeight, 2, 2, 'FD');
+
     doc.setFontSize(8.5);
     doc.setFont("helvetica", "bold");
-    doc.text("Toplam Fatura (Borc):", 20, afterIntroY + 6.5);
-    doc.text("Toplam Odenen (Alacak):", 80, afterIntroY + 6.5);
-    doc.text("MUTABAKAT BAKIYESI:", 135, afterIntroY + 6.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Toplam Fatura (Borc):", 20, boxY + 6.5);
+    doc.text("Toplam Odenen (Alacak):", 80, boxY + 6.5);
+    doc.text("MUTABAKAT BAKIYESI:", 140, boxY + 6.5);
 
     doc.setFont("helvetica", "normal");
-    doc.text(`${(totalBilled || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 20, afterIntroY + 12.5);
-    doc.text(`${(totalPaid || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 80, afterIntroY + 12.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text(`${(totalBilled || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 20, boxY + 13);
+    doc.text(`${(totalPaid || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 80, boxY + 13);
 
     doc.setFont("helvetica", "bold");
     if (balanceNum > 0) {
         doc.setTextColor(220, 38, 38);
-        doc.text(`${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 135, afterIntroY + 12.5);
+        doc.text(`${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 140, boxY + 13);
     } else if (balanceNum < 0) {
         doc.setTextColor(16, 185, 129);
-        doc.text(`${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 135, afterIntroY + 12.5);
+        doc.text(`${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 140, boxY + 13);
     } else {
         doc.setTextColor(71, 85, 105);
-        doc.text("0.00 TL (Denk)", 135, afterIntroY + 12.5);
+        doc.text("0.00 TL (Denk)", 140, boxY + 13);
     }
 
     doc.setTextColor(0, 0, 0);
@@ -3534,51 +3555,52 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
         ];
     });
 
-    const startTableY = afterIntroY + 22;
+    const startTableY = boxY + boxHeight + 7;
 
     doc.autoTable({
         startY: startTableY,
         head: [['Donem', 'Islem Tarihi', 'Aciklama', 'Borc (Fatura)', 'Alacak (Odeme)']],
         body: rows.length > 0 ? rows : [['-', '-', 'Bu donemde kayitli hareket bulunmamaktadir.', '-', '-']],
-        styles: { font: 'helvetica', fontSize: 8, cellPadding: 3 },
-        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+        styles: { 
+            font: 'helvetica', 
+            fontSize: 8, 
+            cellPadding: 3,
+            overflow: 'linebreak',
+            lineColor: [226, 232, 240],
+            lineWidth: 0.2
+        },
+        headStyles: { 
+            fillColor: [30, 64, 175], 
+            textColor: 255, 
+            fontStyle: 'bold',
+            halign: 'left'
+        },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: {
             0: { cellWidth: 26 },
             1: { cellWidth: 24 },
             2: { cellWidth: 'auto' },
-            3: { cellWidth: 30, halign: 'right' },
-            4: { cellWidth: 30, halign: 'right' }
+            3: { cellWidth: 32, halign: 'right' },
+            4: { cellWidth: 32, halign: 'right' }
         },
         theme: 'grid',
-        margin: { top: 10, left: 14, right: 14 }
+        margin: { top: 15, bottom: 20, left: 14, right: 14 },
+        pageBreak: 'auto'
     });
 
-    const finalY = doc.lastAutoTable?.finalY || startTableY + 40;
-    const boxY = Math.min(finalY + 8, 248);
-
-    doc.setDrawColor(203, 213, 225);
-    doc.setFillColor(255, 255, 255);
-    doc.roundedRect(14, boxY, 82, 30, 2, 2, 'D');
-    doc.roundedRect(114, boxY, 82, 30, 2, 2, 'D');
-
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(71, 85, 105);
-    doc.text("DUZENLEYEN (OSGB)", 55, boxY + 6, { align: "center" });
-    doc.text("KONTROL EDEN & ONAYLAYAN (MUSTERI)", 155, boxY + 6, { align: "center" });
-
-    doc.setFontSize(7.5);
-    doc.setFont("helvetica", "normal");
-    doc.text("Kase / Yetkili Imza", 55, boxY + 26, { align: "center" });
-    doc.text("Mutabikiz [  ]       Mutabik Degiliz [  ]", 155, boxY + 26, { align: "center" });
-
+    // Sayfa Numarası & Alt Bilgi
     const pageCount = doc.internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
-        doc.setFontSize(7);
+        doc.setFontSize(7.5);
+        doc.setFont("helvetica", "normal");
         doc.setTextColor(148, 163, 184);
-        doc.text(`OSGB ProFinans - Resmi Cari Mutabakat Formu - Sayfa ${i} / ${pageCount}`, doc.internal.pageSize.width / 2, doc.internal.pageSize.height - 5, { align: 'center' });
+        doc.text(
+            `OSGB ProFinans - Resmi Cari Mutabakat Mektubu - Sayfa ${i} / ${pageCount}`, 
+            doc.internal.pageSize.width / 2, 
+            doc.internal.pageSize.height - 8, 
+            { align: 'center' }
+        );
     }
 
     return Buffer.from(doc.output('arraybuffer'));
