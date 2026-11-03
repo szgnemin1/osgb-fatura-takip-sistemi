@@ -223,6 +223,7 @@ export interface ReconciliationStats {
   approved: number;
   disputed: number;
   pending: number;
+  allPendingCount?: number;
   hasPhone: number;
   hasEmail: number;
   hasBoth: number;

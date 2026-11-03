@@ -2557,12 +2557,21 @@ async function getFirmById(firmId) {
     return null;
 }
 
-async function getTransactionsForFirm(firmId) {
+async function getTransactionsForFirm(firmId, cutoffDate = null) {
     if (!db) return [];
     const rows = await db.all("SELECT data FROM transactions WHERE data LIKE ?", [`%"firmId":"${firmId}"%`]);
+    const cutoffTime = (cutoffDate && !isNaN(Date.parse(cutoffDate))) ? new Date(cutoffDate + 'T23:59:59.999Z').getTime() : null;
     return rows.map(r => {
         try { return JSON.parse(r.data); } catch (_) { return null; }
-    }).filter(t => t && String(t.firmId) === String(firmId));
+    }).filter(t => {
+        if (!t || String(t.firmId) !== String(firmId)) return false;
+        if (t.status && t.status !== 'APPROVED') return false;
+        if (cutoffTime && t.date) {
+            const transTime = new Date(t.date).getTime();
+            if (!isNaN(transTime) && transTime > cutoffTime) return false;
+        }
+        return true;
+    });
 }
 
 // Telegram Mesaj Gönderme
@@ -3165,56 +3174,36 @@ let waQrCode = null;
 let isWaConnected = false;
 let waUserPhone = null;
 let isWaInitializing = false;
+let isExplicitlyClosingWa = false;
+let waReconnectTimer = null;
 
 const waAuthDir = path.join(dbDir, 'whatsapp_auth');
 if (!fs.existsSync(waAuthDir)) fs.mkdirSync(waAuthDir, { recursive: true });
 
-async function initWhatsApp() {
-    if (isWaInitializing) return;
-    isWaInitializing = true;
-    try {
-        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-        const pino = require('pino');
+function clearWaReconnectTimer() {
+    if (waReconnectTimer) {
+        clearTimeout(waReconnectTimer);
+        waReconnectTimer = null;
+    }
+}
 
-        const { state, saveCreds } = await useMultiFileAuthState(waAuthDir);
+function scheduleWaReconnect(delayMs = 5000) {
+    clearWaReconnectTimer();
+    waReconnectTimer = setTimeout(() => {
+        waReconnectTimer = null;
+        initWhatsApp().catch(err => console.error('[WhatsApp] Yeniden bağlanma hatası:', err));
+    }, delayMs);
+}
 
-        waSocket = makeWASocket({
-            auth: state,
-            printQRInTerminal: false,
-            logger: pino({ level: 'silent' }),
-            browser: ['OSGB ProFinans', 'Chrome', '1.0.0']
-        });
-
-        waSocket.ev.on('creds.update', saveCreds);
-
-        waSocket.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect, qr } = update;
-            if (qr) {
-                waQrCode = qr;
-                isWaConnected = false;
-                io.emit('wa_status', { isConnected: false, qrCode: qr });
-            }
-            if (connection === 'close') {
-                isWaConnected = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                console.log('[WhatsApp] Bağlantı kapandı, kod:', statusCode, 'Yeniden bağlanma:', shouldReconnect);
-                if (shouldReconnect) {
-                    setTimeout(() => initWhatsApp(), 5000);
-                } else {
-                    waQrCode = null;
-                    waUserPhone = null;
-                    try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
-                    io.emit('wa_status', { isConnected: false, qrCode: null });
-                }
-            } else if (connection === 'open') {
-                isWaConnected = true;
-                waQrCode = null;
-                waUserPhone = waSocket.user?.id ? waSocket.user.id.split(':')[0] : null;
-                console.log(`[WhatsApp] Başarıyla bağlandı! Numara: ${waUserPhone}`);
-                io.emit('wa_status', { isConnected: true, qrCode: null, phoneNumber: waUserPhone });
-            }
-        });
+// Tarih / Dönem Metin Formatlayıcı (örn: 2026-10-31 -> 31.10.2026)
+function formatPeriodDisplay(period) {
+    if (!period) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(period)) {
+        const [y, m, d] = period.split('-');
+        return `${d}.${m}.${y}`;
+    }
+    return period;
+}
 
 // JID'den (LID veya s.whatsapp.net) gerçek telefon numarasını çözümle
 function resolvePhoneFromJid(jid) {
@@ -3280,6 +3269,89 @@ function isDisputeText(text) {
     if (lower === 'hayır' || lower === 'hayir') return true;
     return false;
 }
+
+async function initWhatsApp() {
+    if (isWaInitializing) return;
+    clearWaReconnectTimer();
+    isWaInitializing = true;
+    try {
+        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+        const pino = require('pino');
+
+        // Bozuk JSON veya kilitli auth durumunda otomatik onarım
+        let authState;
+        try {
+            authState = await useMultiFileAuthState(waAuthDir);
+        } catch (authErr) {
+            console.error('[WhatsApp] Auth dosyaları bozulmuş olabilir, temizlenip sıfırlanıyor:', authErr.message);
+            try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
+            fs.mkdirSync(waAuthDir, { recursive: true });
+            authState = await useMultiFileAuthState(waAuthDir);
+        }
+
+        const { state, saveCreds } = authState;
+
+        // Eski soketi temizle
+        if (waSocket) {
+            try {
+                waSocket.ev.removeAllListeners('connection.update');
+                waSocket.ev.removeAllListeners('creds.update');
+                waSocket.ev.removeAllListeners('messages.upsert');
+                waSocket.end(undefined);
+            } catch (_) {}
+            waSocket = null;
+        }
+
+        waSocket = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: ['OSGB ProFinans', 'Chrome', '1.0.0'],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 25000,
+            retryRequestDelayMs: 250
+        });
+
+        waSocket.ev.on('creds.update', saveCreds);
+
+        waSocket.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            if (qr) {
+                waQrCode = qr;
+                isWaConnected = false;
+                io.emit('wa_status', { isConnected: false, qrCode: qr, phoneNumber: null });
+            }
+            if (connection === 'close') {
+                isWaConnected = false;
+                if (isExplicitlyClosingWa) {
+                    console.log('[WhatsApp] Bağlantı kontrollü sonlandırıldı, otomatik yeniden bağlanılmayacak.');
+                    return;
+                }
+
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== DisconnectReason.badSession;
+                console.log('[WhatsApp] Bağlantı kapandı, kod:', statusCode, 'Yeniden bağlanma:', shouldReconnect);
+
+                if (shouldReconnect) {
+                    const delay = statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
+                    scheduleWaReconnect(delay);
+                } else {
+                    waQrCode = null;
+                    waUserPhone = null;
+                    try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
+                    fs.mkdirSync(waAuthDir, { recursive: true });
+                    io.emit('wa_status', { isConnected: false, qrCode: null, phoneNumber: null });
+                }
+            } else if (connection === 'open') {
+                clearWaReconnectTimer();
+                isWaConnected = true;
+                waQrCode = null;
+                waUserPhone = waSocket.user?.id ? waSocket.user.id.split(':')[0] : null;
+                console.log(`[WhatsApp] Başarıyla bağlandı! Numara: ${waUserPhone}`);
+                io.emit('wa_status', { isConnected: true, qrCode: null, phoneNumber: waUserPhone });
+            }
+        });
 
         // Gelen WhatsApp Mesajlarını Dinle (1: Mutabıkız, 2: Fark Var Yanıt Botu)
         waSocket.ev.on('messages.upsert', async (chatUpdate) => {
@@ -3426,9 +3498,11 @@ function buildReconciliationCaption(firm, rec, approvalUrl) {
     if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇLU`;
     else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAKLI`;
 
+    const displayPeriod = formatPeriodDisplay(rec.period);
+
     return (
         `Sayın Yetkili (*${firm.name}*),\n\n` +
-        `6102 sayılı TTK m. 94 ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${rec.period}* dönemi sonu itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
+        `6102 sayılı TTK m. 94 ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${displayPeriod}* tarihi itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
         `👉 *${bakiyeStr}* olarak tespit edilmiştir.\n\n` +
         `Resmi mutabakat mektubunuz ve ayrıntılı hesap dökümünüz ekteki PDF belgesinde yer almaktadır.\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
@@ -3445,6 +3519,7 @@ function buildReconciliationCaption(firm, rec, approvalUrl) {
 // Resmi Mutabakat Mektubu PDF Üretici
 function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid, transactions) {
     const doc = new jsPDF();
+    const displayPeriod = formatPeriodDisplay(period);
 
     // Resmi Başlık
     doc.setFontSize(15);
@@ -3467,7 +3542,7 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
     doc.text(`Tarih: ${new Date().toLocaleDateString('tr-TR')}`, 196, currentY, { align: 'right' });
-    doc.text(`Mutabakat Donemi: ${replaceTR(period || '-')}`, 196, currentY + 5, { align: 'right' });
+    doc.text(`Mutabakat Tarihi: ${replaceTR(displayPeriod || '-')}`, 196, currentY + 5, { align: 'right' });
 
     // Sol Üst: Sayın Yetkili ve Firma Adı
     doc.setFont("helvetica", "bold");
@@ -3506,7 +3581,7 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
     doc.setFontSize(8.5);
     doc.setTextColor(51, 65, 85);
 
-    const p1 = `6102 sayili Turk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayili Vergi Usul Kanunu (VUK) hukumleri geregince, sirketimiz nezdindeki yasal muhasebe kayitlarimiza gore ${replaceTR(period || '')} donem sonu itibariyla firmanizin cari hesap bakiyesi ${bakiyeMetni} olarak gorulmektedir.`;
+    const p1 = `6102 sayili Turk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayili Vergi Usul Kanunu (VUK) hukumleri geregince, sirketimiz nezdindeki yasal muhasebe kayitlarimiza gore ${replaceTR(displayPeriod || '')} tarihi itibariyla firmanizin cari hesap bakiyesi ${bakiyeMetni} olarak gorulmektedir.`;
     const linesP1 = doc.splitTextToSize(p1, 182);
     doc.text(linesP1, 14, currentY);
     currentY += (linesP1.length * 4.2) + 2.5;
@@ -3657,15 +3732,24 @@ app.get('/api/whatsapp/status', authenticateToken, (req, res) => {
 // WhatsApp Bağlantısını Yeniden Başlat (QR Üret)
 app.post('/api/whatsapp/restart', authenticateToken, requireAdmin, async (req, res) => {
     try {
+        clearWaReconnectTimer();
+        isExplicitlyClosingWa = true;
         if (waSocket) {
-            try { waSocket.end(); } catch (_) {}
+            try {
+                waSocket.ev.removeAllListeners('connection.update');
+                waSocket.ev.removeAllListeners('creds.update');
+                waSocket.ev.removeAllListeners('messages.upsert');
+                waSocket.end(undefined);
+            } catch (_) {}
             waSocket = null;
         }
         waQrCode = null;
         isWaConnected = false;
+        isExplicitlyClosingWa = false;
         await initWhatsApp();
         res.json({ success: true, message: 'WhatsApp servisi başlatıldı.' });
     } catch (e) {
+        isExplicitlyClosingWa = false;
         res.status(500).json({ error: 'WhatsApp başlatılamadı: ' + e.message });
     }
 });
@@ -3673,17 +3757,28 @@ app.post('/api/whatsapp/restart', authenticateToken, requireAdmin, async (req, r
 // WhatsApp Bağlantısını Kes
 app.post('/api/whatsapp/disconnect', authenticateToken, requireAdmin, async (req, res) => {
     try {
+        clearWaReconnectTimer();
+        isExplicitlyClosingWa = true;
         if (waSocket) {
-            try { await waSocket.logout(); } catch (_) {}
-            try { waSocket.end(); } catch (_) {}
+            try {
+                waSocket.ev.removeAllListeners('connection.update');
+                waSocket.ev.removeAllListeners('creds.update');
+                waSocket.ev.removeAllListeners('messages.upsert');
+                await waSocket.logout().catch(() => {});
+                waSocket.end(undefined);
+            } catch (_) {}
             waSocket = null;
         }
         isWaConnected = false;
         waQrCode = null;
         waUserPhone = null;
         try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
+        fs.mkdirSync(waAuthDir, { recursive: true });
+        isExplicitlyClosingWa = false;
+        io.emit('wa_status', { isConnected: false, qrCode: null, phoneNumber: null });
         res.json({ success: true, message: 'WhatsApp bağlantısı kesildi.' });
     } catch (e) {
+        isExplicitlyClosingWa = false;
         res.status(500).json({ error: 'Bağlantı kesilemedi: ' + e.message });
     }
 });
@@ -3786,7 +3881,7 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
                         Sayın Yetkili (<strong>${escapeHtml(firm.name || 'Değerli Müşterimiz')}</strong>),
                     </p>
                     <p style="font-size: 13.5px; line-height: 1.6; color: #475569; margin: 0 0 20px;">
-                        6102 sayılı Türk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayılı Vergi Usul Kanunu (VUK) hükümleri uyarınca, şirketimiz yasal muhasebe kayıtlarına göre <strong>${escapeHtml(rec.period)}</strong> dönemi sonu itibarıyla firmanız cari hesap bakiyesi aşağıda ve ekteki resmi hesap özetinde yer almaktadır:
+                        6102 sayılı Türk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayılı Vergi Usul Kanunu (VUK) hükümleri uyarınca, şirketimiz yasal muhasebe kayıtlarına göre <strong>${escapeHtml(formatPeriodDisplay(rec.period))}</strong> tarihi itibarıyla firmanız cari hesap bakiyesi aşağıda ve ekteki resmi hesap özetinde yer almaktadır:
                     </p>
 
                     <!-- Finansal Kart -->
@@ -3864,7 +3959,7 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
     const mailOptions = {
         from: fromAddress,
         to: targetEmail,
-        subject: `Cari Hesap Mutabakat Mektubu - ${rec.period} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
+        subject: `Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
         html: htmlContent,
         attachments: [
             {
@@ -3893,8 +3988,8 @@ async function dispatchReconciliationItem(rec, req) {
         throw new Error(`"${firm.name}" firmasına ait ne telefon ne de e-posta adresi kayıtlı.`);
     }
 
-    // PDF Üret
-    const transactions = await getTransactionsForFirm(rec.firm_id);
+    // PDF Üret (Kesim tarihine kadar olan hareketleri filtrele)
+    const transactions = await getTransactionsForFirm(rec.firm_id, rec.period);
     const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
     const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
     const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
@@ -4087,18 +4182,9 @@ app.post('/api/smtp/test', authenticateToken, requireAdmin, smtpTestLimiter, asy
 app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
-        const period = req.query.period || '2026-Q3';
+        const period = req.query.period || new Date().toISOString().slice(0, 10);
 
-        const rows = await db.all(
-            `SELECT r.*, f.data as firm_data 
-             FROM reconciliations r 
-             LEFT JOIN firms f ON r.firm_id = f.id 
-             WHERE r.period = ? 
-             ORDER BY r.firm_id ASC`,
-            [period]
-        );
-
-        const items = rows.map(r => {
+        const mapRecRow = (r) => {
             let firmName = 'Bilinmeyen Firma';
             let firmEmail = '';
             let firmPhone = '';
@@ -4135,7 +4221,28 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
                 created_at: r.created_at,
                 updated_at: r.updated_at
             };
-        });
+        };
+
+        // 1. Seçilen tarihe/döneme ait kayıtlar
+        const rows = await db.all(
+            `SELECT r.*, f.data as firm_data 
+             FROM reconciliations r 
+             LEFT JOIN firms f ON r.firm_id = f.id 
+             WHERE r.period = ? 
+             ORDER BY r.firm_id ASC`,
+            [period]
+        );
+        const items = rows.map(mapRecRow);
+
+        // 2. Tarihten bağımsız, müşteri onayı bekleyen tüm kayıtlar (status = 'SENT')
+        const pendingRows = await db.all(
+            `SELECT r.*, f.data as firm_data 
+             FROM reconciliations r 
+             LEFT JOIN firms f ON r.firm_id = f.id 
+             WHERE r.status = 'SENT' 
+             ORDER BY r.sent_at DESC, r.updated_at DESC`
+        );
+        const pendingItems = pendingRows.map(mapRecRow);
 
         const stats = {
             total: items.length,
@@ -4143,25 +4250,29 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
             approved: items.filter(i => i.status === 'APPROVED').length,
             disputed: items.filter(i => i.status === 'DISPUTED').length,
             pending: items.filter(i => i.status === 'SENT').length,
+            allPendingCount: pendingItems.length,
             hasPhone: items.filter(i => i.phone && i.phone.trim().length >= 10).length,
             hasEmail: items.filter(i => i.email && i.email.includes('@')).length,
             hasBoth: items.filter(i => (i.phone && i.phone.trim().length >= 10) && (i.email && i.email.includes('@'))).length,
             missingContact: items.filter(i => (!i.phone || i.phone.trim().length < 10) && (!i.email || !i.email.includes('@'))).length
         };
 
-        res.json({ items, stats });
+        res.json({ items, stats, pendingItems });
     } catch (e) {
         console.error('Mutabakat veri hatası:', e);
         res.status(500).json({ error: 'Mutabakat verileri alınamadı: ' + e.message });
     }
 });
 
-// Mutabakat Listesini Döneme Göre Hesapla & Veritabanına Yaz
+// Mutabakat Listesini Tarihe/Döneme Göre Hesapla & Veritabanına Yaz
 app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
         const { period } = req.body;
-        if (!period) return res.status(400).json({ error: 'Dönem seçimi zorunludur.' });
+        if (!period) return res.status(400).json({ error: 'Mutabakat tarihi seçimi zorunludur.' });
+
+        // Kesim tarihi filtresi (Eğer YYYY-MM-DD veya geçerli bir tarih ise bu tarihten sonraki hareketleri hariç tut)
+        const cutoffTime = !isNaN(Date.parse(period)) ? new Date(period + 'T23:59:59.999Z').getTime() : null;
 
         // Tüm firmaları al
         const firmRows = await db.all("SELECT id, data FROM firms");
@@ -4180,8 +4291,17 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
             try { firm = JSON.parse(fRow.data); } catch (_) {}
             const firmId = fRow.id;
 
-            // Bu firmaya ait onaylı hareketler
-            const firmTrans = allTransactions.filter(t => String(t.firmId) === String(firmId) && (t.status === 'APPROVED' || !t.status));
+            // Bu firmaya ait onaylı ve seçilen kesim tarihine kadar olan hareketler
+            const firmTrans = allTransactions.filter(t => {
+                if (String(t.firmId) !== String(firmId)) return false;
+                if (t.status && t.status !== 'APPROVED') return false;
+                if (cutoffTime && t.date) {
+                    const transTime = new Date(t.date).getTime();
+                    if (!isNaN(transTime) && transTime > cutoffTime) return false;
+                }
+                return true;
+            });
+
             const totalBilled = firmTrans.filter(t => t.type === 'FATURA' || t.type === 'INVOICE').reduce((s, t) => s + (Number(t.debt) || 0), 0);
             const totalPaid = firmTrans.reduce((s, t) => s + (Number(t.credit) || 0), 0);
             const balance = totalBilled - totalPaid;
@@ -4417,7 +4537,7 @@ app.get('/mutabakat/:token/pdf', async (req, res) => {
         const firm = await getFirmById(rec.firm_id);
         if (!firm) return res.status(404).send('Firma bilgisi bulunamadı.');
 
-        const transactions = await getTransactionsForFirm(rec.firm_id);
+        const transactions = await getTransactionsForFirm(rec.firm_id, rec.period);
         const pdfBuffer = generateReconciliationPDF(firm, rec.period, rec.balance, rec.total_billed, rec.total_paid, transactions);
         const safeName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
         const filename = `${safeName}_Cari_Mutabakat_${rec.period}.pdf`;
@@ -4538,7 +4658,7 @@ app.get('/mutabakat/:token', async (req, res) => {
 
         const firm = await getFirmById(rec.firm_id);
         const firmName = escapeHtml(firm?.name || 'Değerli Müşterimiz');
-        const periodStr = escapeHtml(rec.period);
+        const periodStr = escapeHtml(formatPeriodDisplay(rec.period));
         const balanceNum = Number(rec.balance) || 0;
         const balanceFormatted = Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 });
 

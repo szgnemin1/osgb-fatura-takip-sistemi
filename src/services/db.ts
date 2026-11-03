@@ -821,7 +821,7 @@ export const db = {
     return data;
   },
 
-  getReconciliations: async (period: string): Promise<{ items: ReconciliationItem[]; stats: any }> => {
+  getReconciliations: async (period: string): Promise<{ items: ReconciliationItem[]; stats: ReconciliationStats; pendingItems?: ReconciliationItem[] }> => {
     const res = await fetchWithAuth(`/api/reconciliation/data?period=${encodeURIComponent(period)}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Mutabakat verileri alınamadı.');

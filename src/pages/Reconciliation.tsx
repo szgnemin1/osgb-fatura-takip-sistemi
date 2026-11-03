@@ -3,30 +3,27 @@ import { db } from '../services/db';
 import { 
   FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
-  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign
+  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
 
-const PERIOD_OPTIONS = [
-  { value: '2026-Q3', label: '2026 - 3. Çeyrek (30 Eylül 2026)' },
-  { value: '2026-Q2', label: '2026 - 2. Çeyrek (30 Haziran 2026)' },
-  { value: '2026-Q1', label: '2026 - 1. Çeyrek (31 Mart 2026)' },
-  { value: '2026-Q4', label: '2026 - 4. Çeyrek (31 Aralık 2026 - Yıl Sonu)' },
-  { value: '2026-10', label: '2026 Ekim Ay Sonu' },
-  { value: '2026-09', label: '2026 Eylül Ay Sonu' },
-  { value: 'CURRENT', label: 'Güncel Durum (Bugün İtibariyle)' }
-];
-
 export const Reconciliation: React.FC = () => {
-  const [selectedPeriod, setSelectedPeriod] = useState('2026-Q3');
+  const getInitialCutoffDate = () => {
+    const d = new Date();
+    return d.toISOString().slice(0, 10);
+  };
+
+  const [selectedPeriod, setSelectedPeriod] = useState(getInitialCutoffDate);
   const [items, setItems] = useState<ReconciliationItem[]>([]);
+  const [pendingItems, setPendingItems] = useState<ReconciliationItem[]>([]);
   const [stats, setStats] = useState<ReconciliationStats>({
     total: 0,
     sent: 0,
     approved: 0,
     disputed: 0,
     pending: 0,
+    allPendingCount: 0,
     hasPhone: 0,
     hasEmail: 0,
     hasBoth: 0,
@@ -37,6 +34,35 @@ export const Reconciliation: React.FC = () => {
   const [isPreparing, setIsPreparing] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'APPROVED' | 'DISPUTED' | 'SENT' | 'PENDING_SEND' | 'HAS_BOTH' | 'PHONE_ONLY' | 'EMAIL_ONLY' | 'MISSING_CONTACT'>('all');
+
+  const formatDateTR = (dateStr: string) => {
+    if (!dateStr) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      const [y, m, d] = dateStr.split('-');
+      return `${d}.${m}.${y}`;
+    }
+    return dateStr;
+  };
+
+  const setPresetDate = (type: 'today' | 'this_month' | 'last_month' | 'q3' | 'year_end') => {
+    const now = new Date();
+    let target = new Date();
+    if (type === 'today') {
+      target = now;
+    } else if (type === 'this_month') {
+      target = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    } else if (type === 'last_month') {
+      target = new Date(now.getFullYear(), now.getMonth(), 0);
+    } else if (type === 'q3') {
+      target = new Date(now.getFullYear(), 8, 30);
+    } else if (type === 'year_end') {
+      target = new Date(now.getFullYear(), 11, 31);
+    }
+    const y = target.getFullYear();
+    const m = String(target.getMonth() + 1).padStart(2, '0');
+    const d = String(target.getDate()).padStart(2, '0');
+    setSelectedPeriod(`${y}-${m}-${d}`);
+  };
 
   // WhatsApp Durumu
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ isConnected: false, qrCode: null });
@@ -98,12 +124,14 @@ export const Reconciliation: React.FC = () => {
     try {
       const data = await db.getReconciliations(selectedPeriod);
       setItems(data.items || []);
+      setPendingItems(data.pendingItems || []);
       setStats(data.stats || {
         total: 0,
         sent: 0,
         approved: 0,
         disputed: 0,
         pending: 0,
+        allPendingCount: 0,
         hasPhone: 0,
         hasEmail: 0,
         hasBoth: 0,
@@ -126,8 +154,9 @@ export const Reconciliation: React.FC = () => {
     const waInterval = setInterval(loadWhatsAppStatus, 5000);
     const dataInterval = setInterval(() => {
       db.getReconciliations(selectedPeriod).then(data => {
-        if (data && data.items) {
-          setItems(data.items);
+        if (data) {
+          if (data.items) setItems(data.items);
+          if (data.pendingItems) setPendingItems(data.pendingItems);
           if (data.stats) setStats(data.stats);
         }
       }).catch(() => {});
@@ -405,38 +434,81 @@ export const Reconciliation: React.FC = () => {
         </div>
       )}
 
-      {/* 2. DÖNEM SEÇİMİ VE AKSİYON BAR */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+      {/* 2. DÖNEM / KESİM TARİHİ SEÇİMİ VE AKSİYON BAR */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div className="flex flex-col md:flex-row md:items-center gap-3.5 flex-wrap">
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1">Mutabakat Dönemi</label>
-            <select
-              value={selectedPeriod}
-              onChange={(e) => setSelectedPeriod(e.target.value)}
-              className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-white text-xs sm:text-sm font-semibold outline-none focus:border-emerald-500 cursor-pointer min-w-[240px]"
-            >
-              {PERIOD_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Bakiye Kesim Tarihi
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={selectedPeriod}
+                onChange={(e) => setSelectedPeriod(e.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-white text-xs sm:text-sm font-semibold outline-none focus:border-emerald-500 cursor-pointer"
+              />
+              <span className="text-xs font-bold text-emerald-400 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 whitespace-nowrap">
+                {formatDateTR(selectedPeriod)} İtibarıyla
+              </span>
+            </div>
           </div>
 
-          <div className="sm:self-end">
+          {/* Hızlı Tarih Seçim Kısayolları */}
+          <div className="flex items-center gap-1.5 flex-wrap pt-1 md:pt-4">
+            <button
+              type="button"
+              onClick={() => setPresetDate('today')}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+            >
+              Bugün
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresetDate('this_month')}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+            >
+              Bu Ay Sonu
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresetDate('last_month')}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+            >
+              Önceki Ay Sonu
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresetDate('q3')}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+            >
+              30 Eylül (3. Çeyrek)
+            </button>
+            <button
+              type="button"
+              onClick={() => setPresetDate('year_end')}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
+            >
+              31 Aralık (Yıl Sonu)
+            </button>
+          </div>
+
+          <div className="md:self-end pt-1">
             <button
               type="button"
               onClick={handlePrepareList}
               disabled={isPreparing}
               className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold flex items-center gap-2 border border-slate-700 transition-colors disabled:opacity-50"
-              title="Seçilen döneme göre tüm firmaların güncel cari bakiyesini hesaplar ve listeyi yeniler"
+              title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
             >
               {isPreparing ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <RefreshCw className="w-4 h-4 text-emerald-400" />}
-              <span>Listeyi Hesapla & Hazırla</span>
+              <span>Tarihe Göre Bakiyeleri Hesapla</span>
             </button>
           </div>
         </div>
 
         {/* Toplu Gönderim Butonu */}
-        <div className="flex items-center gap-3 self-end md:self-auto">
+        <div className="flex items-center gap-3 self-end xl:self-auto">
           <button
             type="button"
             onClick={() => setShowBatchModal(true)}
@@ -493,9 +565,14 @@ export const Reconciliation: React.FC = () => {
 
         <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
           <div className="text-[11px] text-amber-400 font-medium flex items-center gap-1">
-            <Clock className="w-3.5 h-3.5" /> Bekleyen
+            <Clock className="w-3.5 h-3.5" /> Onay Bekleyen
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-amber-300 mt-1">{stats.pending}</div>
+          <div className="text-xl sm:text-2xl font-bold text-amber-300 mt-1 flex items-baseline gap-1">
+            <span>{stats.pending}</span>
+            <span className="text-[11px] font-normal text-amber-400/80" title="Tüm dönemlerden müşteri yanıtı bekleyenler">
+              (Tüm: {pendingItems.length})
+            </span>
+          </div>
         </div>
 
         <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
@@ -504,6 +581,125 @@ export const Reconciliation: React.FC = () => {
           </div>
           <div className="text-xl sm:text-2xl font-bold text-rose-400 mt-1">{stats.missingContact || 0}</div>
         </div>
+      </div>
+
+      {/* 3.5 ONAY BEKLEYEN MUTABAKATLAR (TARİHTEN BAĞIMSIZ - AÇIK LİSTE) */}
+      <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+              <Clock className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-sm sm:text-base font-bold text-white">Müşteri Onayı Bekleyen Mutabakatlar</h3>
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-extrabold border border-amber-500/30">
+                  {pendingItems.length} Firma Beklemede
+                </span>
+              </div>
+              <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
+                Tarih seçiminden bağımsızdır; karşı firma onay verene veya itiraz edene kadar burada aktif olarak bekler.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {pendingItems.length === 0 ? (
+          <div className="text-center py-6 text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
+            <CheckCircle2 className="w-7 h-7 mx-auto mb-2 text-emerald-500/60" />
+            <span className="text-slate-300 font-medium">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
+            <p className="text-slate-500 mt-0.5">Tüm gönderilenler onaylandı veya yukarıdan seçilen tarihe göre yeni mutabakat gönderebilirsiniz.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-slate-800/80">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-950/90 text-slate-400 font-semibold border-b border-slate-800">
+                <tr>
+                  <th className="py-2.5 px-3">Firma Adı & İletişim</th>
+                  <th className="py-2.5 px-3">Kesim Tarihi</th>
+                  <th className="py-2.5 px-3 text-right">Mutabakat Bakiyesi</th>
+                  <th className="py-2.5 px-3 text-center">Gönderilen Kanal</th>
+                  <th className="py-2.5 px-3 text-center">Gönderim Zamanı</th>
+                  <th className="py-2.5 px-3 text-right">Hızlı İşlemler</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
+                {pendingItems.map((pItem) => {
+                  const balanceNum = Number(pItem.balance) || 0;
+                  return (
+                    <tr key={pItem.id} className="hover:bg-slate-800/40 transition-colors">
+                      <td className="py-2.5 px-3">
+                        <div className="font-bold text-white text-xs">{pItem.firm_name}</div>
+                        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                          {pItem.phone && <span>📱 {pItem.phone}</span>}
+                          {pItem.email && <span>✉️ {pItem.email}</span>}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800 text-slate-200 font-mono text-[11px] border border-slate-700">
+                          🗓️ {formatDateTR(pItem.period)}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-bold">
+                        {balanceNum > 0 ? (
+                          <span className="text-rose-400">{balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borç)</span>
+                        ) : balanceNum < 0 ? (
+                          <span className="text-emerald-400">{Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacak)</span>
+                        ) : (
+                          <span className="text-slate-400">0.00 TL (Denk)</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-center">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[11px] font-semibold">
+                          {pItem.sent_channels === 'BOTH' ? '📱 + ✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-center text-slate-400 text-[11px]">
+                        {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleCopyLink(pItem.token)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            title="Onay Linkini Kopyala"
+                          >
+                            {copiedToken === pItem.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                          <a
+                            href={`/mutabakat/${pItem.token}/pdf`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            title="PDF İndir / Önizle"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </a>
+                          <button
+                            onClick={() => handleSendSingle(pItem)}
+                            disabled={sendingSingleId === pItem.id}
+                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors disabled:opacity-50"
+                            title="Tekrar Hatırlatma Gönder"
+                          >
+                            {sendingSingleId === pItem.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                            <span>Hatırlat</span>
+                          </button>
+                          <button
+                            onClick={() => handleResetStatus(pItem.id)}
+                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
+                            title="Durumu Sıfırla (Gönderilmediye Al)"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* 4. ARAMA VE FİLTRELEME ÇUBUĞU */}
@@ -1065,8 +1261,8 @@ export const Reconciliation: React.FC = () => {
 
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs text-slate-300">
               <div className="flex justify-between">
-                <span className="text-slate-400">Dönem:</span>
-                <span className="font-bold text-white">{selectedPeriod}</span>
+                <span className="text-slate-400">Kesim Tarihi:</span>
+                <span className="font-bold text-white">{formatDateTR(selectedPeriod)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Toplam Hazır Firma:</span>
