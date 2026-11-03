@@ -44,26 +44,6 @@ export const Reconciliation: React.FC = () => {
     return dateStr;
   };
 
-  const setPresetDate = (type: 'today' | 'this_month' | 'last_month' | 'q3' | 'year_end') => {
-    const now = new Date();
-    let target = new Date();
-    if (type === 'today') {
-      target = now;
-    } else if (type === 'this_month') {
-      target = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    } else if (type === 'last_month') {
-      target = new Date(now.getFullYear(), now.getMonth(), 0);
-    } else if (type === 'q3') {
-      target = new Date(now.getFullYear(), 8, 30);
-    } else if (type === 'year_end') {
-      target = new Date(now.getFullYear(), 11, 31);
-    }
-    const y = target.getFullYear();
-    const m = String(target.getMonth() + 1).padStart(2, '0');
-    const d = String(target.getDate()).padStart(2, '0');
-    setSelectedPeriod(`${y}-${m}-${d}`);
-  };
-
   // WhatsApp Durumu
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ isConnected: false, qrCode: null });
   const [isLoadingWa, setIsLoadingWa] = useState(false);
@@ -434,96 +414,47 @@ export const Reconciliation: React.FC = () => {
         </div>
       )}
 
-      {/* 2. DÖNEM / KESİM TARİHİ SEÇİMİ VE AKSİYON BAR */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        <div className="flex flex-col md:flex-row md:items-center gap-3.5 flex-wrap">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1 flex items-center gap-1.5">
-              <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Bakiye Kesim Tarihi
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={selectedPeriod}
-                onChange={(e) => setSelectedPeriod(e.target.value)}
-                className="bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-white text-xs sm:text-sm font-semibold outline-none focus:border-emerald-500 cursor-pointer"
-              />
-              <span className="text-xs font-bold text-emerald-400 px-2.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 whitespace-nowrap">
-                {formatDateTR(selectedPeriod)} İtibarıyla
-              </span>
-            </div>
-          </div>
-
-          {/* Hızlı Tarih Seçim Kısayolları */}
-          <div className="flex items-center gap-1.5 flex-wrap pt-1 md:pt-4">
-            <button
-              type="button"
-              onClick={() => setPresetDate('today')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-            >
-              Bugün
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetDate('this_month')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-            >
-              Bu Ay Sonu
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetDate('last_month')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-            >
-              Önceki Ay Sonu
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetDate('q3')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-            >
-              30 Eylül (3. Çeyrek)
-            </button>
-            <button
-              type="button"
-              onClick={() => setPresetDate('year_end')}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-semibold border border-slate-700 transition-colors"
-            >
-              31 Aralık (Yıl Sonu)
-            </button>
-          </div>
-
-          <div className="md:self-end pt-1">
-            <button
-              type="button"
-              onClick={handlePrepareList}
-              disabled={isPreparing}
-              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold flex items-center gap-2 border border-slate-700 transition-colors disabled:opacity-50"
-              title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
-            >
-              {isPreparing ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <RefreshCw className="w-4 h-4 text-emerald-400" />}
-              <span>Tarihe Göre Bakiyeleri Hesapla</span>
-            </button>
-          </div>
+      {/* 2. DÖNEM / KESİM TARİHİ SEÇİMİ VE AKSİYON BAR (İNCE & KOMPAKT) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5 shrink-0">
+            <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Bakiye Kesim Tarihi:
+          </span>
+          <input
+            type="date"
+            value={selectedPeriod}
+            onChange={(e) => setSelectedPeriod(e.target.value)}
+            className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs font-semibold outline-none focus:border-emerald-500 cursor-pointer"
+          />
+          <button
+            type="button"
+            onClick={handlePrepareList}
+            disabled={isPreparing}
+            className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50 shrink-0"
+            title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
+          >
+            {isPreparing ? <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" /> : <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />}
+            <span>Bakiyeleri Hesapla</span>
+          </button>
         </div>
 
         {/* Toplu Gönderim Butonu */}
-        <div className="flex items-center gap-3 self-end xl:self-auto">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setShowBatchModal(true)}
             disabled={isSendingBatch || items.length === 0}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-lg shadow-emerald-950/50 transition-all disabled:opacity-50"
+            className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all disabled:opacity-50"
           >
             {isSendingBatch ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Gönderiliyor...</span>
               </>
             ) : (
               <>
-                <Send className="w-4 h-4" />
-                <span>Çoklu Kanal Toplu Gönderim Başlat</span>
+                <Send className="w-3.5 h-3.5" />
+                <span>Çoklu Kanal Toplu Gönderim</span>
               </>
             )}
           </button>
