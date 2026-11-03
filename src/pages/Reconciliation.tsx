@@ -362,33 +362,33 @@ export const Reconciliation: React.FC = () => {
   });
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-200">
+    <div className="space-y-3.5 animate-in fade-in duration-200">
       
       {/* 1. ÜST BAŞLIK VE KANAL ENTEGRASYON KARTLARI (WHATSAPP + SMTP) */}
-      <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+      <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-3 border-b border-slate-800">
         <div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-100 flex items-center gap-3">
-            <FileCheck className="w-7 h-7 sm:w-8 sm:h-8 text-emerald-400" /> 
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-100 flex items-center gap-2.5">
+            <FileCheck className="w-6 h-6 text-emerald-400" /> 
             Cari Mutabakat & Çoklu Kanal Dağıtım
           </h2>
-          <p className="text-slate-400 mt-1 text-xs sm:text-sm">
+          <p className="text-slate-400 mt-0.5 text-xs">
             E-postası olana mail, telefonu olana WhatsApp, ikisi de olana iki kanaldan birden resmi PDF mutabakat mektubu iletin.
           </p>
         </div>
 
         {/* Entegrasyon Rozetleri (WhatsApp + E-Posta / SMTP) */}
-        <div className="flex flex-wrap items-center gap-2.5 self-start xl:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start xl:self-auto">
           
           {/* WhatsApp Durum Rozeti */}
-          <div className="flex items-center gap-2.5 p-2 px-3 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
-            <div className={`w-2.5 h-2.5 rounded-full ${waStatus.isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
+          <div className="flex items-center gap-2 p-1.5 px-2.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+            <div className={`w-2 h-2 rounded-full ${waStatus.isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
             <div>
-              <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
-                <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+              <div className="text-xs font-semibold text-slate-200 flex items-center gap-1">
+                <Smartphone className="w-3 h-3 text-emerald-400" />
                 <span>{waStatus.isConnected ? (waStatus.phoneNumber || 'WhatsApp Bağlı') : 'WhatsApp Bağlı Değil'}</span>
               </div>
             </div>
-            <div className="pl-2 border-l border-slate-800">
+            <div className="pl-1.5 border-l border-slate-800">
               {waStatus.isConnected ? (
                 <button
                   type="button"
@@ -396,14 +396,14 @@ export const Reconciliation: React.FC = () => {
                   className="p-1 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"
                   title="WhatsApp Bağlantısını Kes"
                 >
-                  <Power className="w-3.5 h-3.5" />
+                  <Power className="w-3 h-3" />
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handleRestartWhatsApp}
                   disabled={isLoadingWa}
-                  className="px-2.5 py-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-[11px] font-bold flex items-center gap-1 transition-colors"
+                  className="px-2 py-0.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-[10.5px] font-bold flex items-center gap-1 transition-colors"
                 >
                   {isLoadingWa ? <Loader2 className="w-3 h-3 animate-spin" /> : <QrCode className="w-3 h-3" />}
                   <span>QR Bağla</span>
@@ -413,37 +413,37 @@ export const Reconciliation: React.FC = () => {
           </div>
 
           {/* E-Posta / SMTP Durum Rozeti */}
-          <div className="flex items-center gap-2.5 p-2 px-3 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
-            <div className={`w-2.5 h-2.5 rounded-full ${smtpConfig.configured ? 'bg-sky-400' : 'bg-amber-500'}`} />
+          <div className="flex items-center gap-2 p-1.5 px-2.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+            <div className={`w-2 h-2 rounded-full ${smtpConfig.configured ? 'bg-sky-400' : 'bg-amber-500'}`} />
             <div>
-              <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
-                <Mail className="w-3.5 h-3.5 text-sky-400" />
+              <div className="text-xs font-semibold text-slate-200 flex items-center gap-1">
+                <Mail className="w-3 h-3 text-sky-400" />
                 <span>{smtpConfig.configured ? (smtpConfig.from_address || smtpConfig.user) : 'SMTP Yapılandırılmadı'}</span>
               </div>
             </div>
-            <div className="pl-2 border-l border-slate-800">
+            <div className="pl-1.5 border-l border-slate-800">
               <button
                 type="button"
                 onClick={() => setShowSmtpModal(true)}
-                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-400 text-[11px] font-bold flex items-center gap-1 transition-colors border border-slate-700"
+                className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 text-[10.5px] font-bold flex items-center gap-1 transition-colors border border-slate-700"
                 title="E-Posta (SMTP) Sunucu Ayarlarını Yapılandır"
               >
                 <Settings className="w-3 h-3" />
-                <span>SMTP Ayarları</span>
+                <span>SMTP</span>
               </button>
             </div>
           </div>
 
           {/* Yönetici WhatsApp Bildirim Rozeti */}
-          <div className="flex items-center gap-2.5 p-2 px-3 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
-            <div className={`w-2.5 h-2.5 rounded-full ${managerPhone ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+          <div className="flex items-center gap-2 p-1.5 px-2.5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
+            <div className={`w-2 h-2 rounded-full ${managerPhone ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
             <div>
-              <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
-                <Bell className="w-3.5 h-3.5 text-amber-400" />
+              <div className="text-xs font-semibold text-slate-200 flex items-center gap-1">
+                <Bell className="w-3 h-3 text-amber-400" />
                 <span>{managerPhone ? `Yönetici: ${managerPhone}` : 'Yönetici No Yok'}</span>
               </div>
             </div>
-            <div className="pl-2 border-l border-slate-800">
+            <div className="pl-1.5 border-l border-slate-800">
               <button
                 type="button"
                 onClick={() => {
@@ -452,7 +452,7 @@ export const Reconciliation: React.FC = () => {
                   setManagerModalSuccess('');
                   setShowManagerModal(true);
                 }}
-                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-[11px] font-bold flex items-center gap-1 transition-colors border border-slate-700"
+                className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-[10.5px] font-bold flex items-center gap-1 transition-colors border border-slate-700"
                 title="Müşteri yanıtlarının anında iletileceği yönetici WhatsApp numarasını ayarla"
               >
                 <Settings className="w-3 h-3" />
@@ -466,32 +466,32 @@ export const Reconciliation: React.FC = () => {
 
       {/* BİLDİRİMLER */}
       {successMsg && (
-        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-4 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
-          <div className="flex items-center gap-2.5">
-            <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-3 rounded-xl flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
             <span className="font-medium">{successMsg}</span>
           </div>
           <button onClick={() => setSuccessMsg('')} className="text-emerald-400/60 hover:text-emerald-300">
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
       {errorMsg && (
-        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-4 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
-          <div className="flex items-center gap-2.5">
-            <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+        <div className="bg-rose-500/10 border border-rose-500/30 text-rose-400 p-3 rounded-xl flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
             <span className="font-medium">{errorMsg}</span>
           </div>
           <button onClick={() => setErrorMsg('')} className="text-rose-400/60 hover:text-rose-300">
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
       {/* 2. DÖNEM / KESİM TARİHİ SEÇİMİ VE AKSİYON BAR (İNCE & KOMPAKT) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 flex-wrap">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-2.5">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5 shrink-0">
             <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Bakiye Kesim Tarihi:
           </span>
@@ -499,16 +499,16 @@ export const Reconciliation: React.FC = () => {
             type="date"
             value={selectedPeriod}
             onChange={(e) => setSelectedPeriod(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-white text-xs font-semibold outline-none focus:border-emerald-500 cursor-pointer"
+            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-white text-xs font-semibold outline-none focus:border-emerald-500 cursor-pointer"
           />
           <button
             type="button"
             onClick={handlePrepareList}
             disabled={isPreparing}
-            className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50 shrink-0"
+            className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50 shrink-0"
             title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
           >
-            {isPreparing ? <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" /> : <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />}
+            {isPreparing ? <Loader2 className="w-3 h-3 animate-spin text-emerald-400" /> : <RefreshCw className="w-3 h-3 text-emerald-400" />}
             <span>Bakiyeleri Hesapla</span>
           </button>
         </div>
@@ -519,16 +519,16 @@ export const Reconciliation: React.FC = () => {
             type="button"
             onClick={() => setShowBatchModal(true)}
             disabled={isSendingBatch || items.length === 0}
-            className="px-4 py-1.5 rounded-lg bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-all disabled:opacity-50"
+            className="px-3.5 py-1 rounded-lg bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
           >
             {isSendingBatch ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <Loader2 className="w-3 h-3 animate-spin" />
                 <span>Gönderiliyor...</span>
               </>
             ) : (
               <>
-                <Send className="w-3.5 h-3.5" />
+                <Send className="w-3 h-3" />
                 <span>Çoklu Kanal Toplu Gönderim</span>
               </>
             )}
@@ -537,73 +537,73 @@ export const Reconciliation: React.FC = () => {
       </div>
 
       {/* 3. KPI İSTATİSTİK KARTLARI */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-slate-400 font-medium">Toplam Firma</div>
-          <div className="text-xl sm:text-2xl font-bold text-white mt-1">{stats.total}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-slate-400 font-medium">Toplam Firma</div>
+          <div className="text-base sm:text-lg font-bold text-white mt-0.5">{stats.total}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-sky-400 font-medium flex items-center gap-1">
-            <Mail className="w-3.5 h-3.5" /> + <Smartphone className="w-3.5 h-3.5" /> İkisi De
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-sky-400 font-medium flex items-center gap-1">
+            <Mail className="w-3 h-3" /> + <Smartphone className="w-3 h-3" /> İkisi De
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-sky-300 mt-1">{stats.hasBoth || 0}</div>
+          <div className="text-base sm:text-lg font-bold text-sky-300 mt-0.5">{stats.hasBoth || 0}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-purple-400 font-medium">İletilenler</div>
-          <div className="text-xl sm:text-2xl font-bold text-purple-300 mt-1">{stats.sent}</div>
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-purple-400 font-medium">İletilenler</div>
+          <div className="text-base sm:text-lg font-bold text-purple-300 mt-0.5">{stats.sent}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
-            <CheckCircle2 className="w-3.5 h-3.5" /> Mutabık
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+            <CheckCircle2 className="w-3 h-3" /> Mutabık
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-emerald-400 mt-1">{stats.approved}</div>
+          <div className="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">{stats.approved}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-rose-400 font-medium flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5" /> Fark Var
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-rose-400 font-medium flex items-center gap-1">
+            <AlertTriangle className="w-3 h-3" /> Fark Var
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-rose-400 mt-1">{stats.disputed}</div>
+          <div className="text-base sm:text-lg font-bold text-rose-400 mt-0.5">{stats.disputed}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-amber-400 font-medium flex items-center gap-1">
-            <Clock className="w-3.5 h-3.5" /> Onay Bekleyen
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
+            <Clock className="w-3 h-3" /> Onay Bekleyen
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-amber-300 mt-1 flex items-baseline gap-1">
+          <div className="text-base sm:text-lg font-bold text-amber-300 mt-0.5 flex items-baseline gap-1">
             <span>{stats.pending}</span>
-            <span className="text-[11px] font-normal text-amber-400/80" title="Tüm dönemlerden müşteri yanıtı bekleyenler">
+            <span className="text-[10px] font-normal text-amber-400/80" title="Tüm dönemlerden müşteri yanıtı bekleyenler">
               (Tüm: {pendingItems.length})
             </span>
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl">
-          <div className="text-[11px] text-rose-400 font-medium flex items-center gap-1">
-            <AlertCircle className="w-3.5 h-3.5 text-rose-400" /> İletişim Yok
+        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+          <div className="text-[10px] text-rose-400 font-medium flex items-center gap-1">
+            <AlertCircle className="w-3 h-3 text-rose-400" /> İletişim Yok
           </div>
-          <div className="text-xl sm:text-2xl font-bold text-rose-400 mt-1">{stats.missingContact || 0}</div>
+          <div className="text-base sm:text-lg font-bold text-rose-400 mt-0.5">{stats.missingContact || 0}</div>
         </div>
       </div>
 
       {/* 3.5 ONAY BEKLEYEN MUTABAKATLAR (TARİHTEN BAĞIMSIZ - AÇIK LİSTE) */}
-      <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3.5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-              <Clock className="w-5 h-5 animate-pulse" />
+      <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-3 shadow-md space-y-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+              <Clock className="w-4 h-4 animate-pulse" />
             </div>
             <div>
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <h3 className="text-sm sm:text-base font-bold text-white">Müşteri Onayı Bekleyen Mutabakatlar</h3>
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-extrabold border border-amber-500/30">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-xs sm:text-sm font-bold text-white">Müşteri Onayı Bekleyen Mutabakatlar</h3>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-extrabold border border-amber-500/30">
                   {pendingItems.length} Firma Beklemede
                 </span>
               </div>
-              <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
+              <p className="text-[10px] text-slate-400">
                 Tarih seçiminden bağımsızdır; karşı firma onay verene veya itiraz edene kadar burada aktif olarak bekler.
               </p>
             </div>
@@ -611,22 +611,21 @@ export const Reconciliation: React.FC = () => {
         </div>
 
         {pendingItems.length === 0 ? (
-          <div className="text-center py-6 text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
-            <CheckCircle2 className="w-7 h-7 mx-auto mb-2 text-emerald-500/60" />
-            <span className="text-slate-300 font-medium">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
-            <p className="text-slate-500 mt-0.5">Tüm gönderilenler onaylandı veya yukarıdan seçilen tarihe göre yeni mutabakat gönderebilirsiniz.</p>
+          <div className="text-center py-4 text-slate-500 text-xs bg-slate-950/40 rounded-lg border border-slate-800/80">
+            <CheckCircle2 className="w-5 h-5 mx-auto mb-1 text-emerald-500/60" />
+            <span className="text-slate-300 font-medium text-xs">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800/80">
+          <div className="overflow-x-auto rounded-lg border border-slate-800/80">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950/90 text-slate-400 font-semibold border-b border-slate-800">
+              <thead className="bg-slate-950/90 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
                 <tr>
-                  <th className="py-2.5 px-3">Firma Adı & İletişim</th>
-                  <th className="py-2.5 px-3">Kesim Tarihi</th>
-                  <th className="py-2.5 px-3 text-right">Mutabakat Bakiyesi</th>
-                  <th className="py-2.5 px-3 text-center">Gönderilen Kanal</th>
-                  <th className="py-2.5 px-3 text-center">Gönderim Zamanı</th>
-                  <th className="py-2.5 px-3 text-right">Hızlı İşlemler</th>
+                  <th className="py-1.5 px-2.5">Firma Adı & İletişim</th>
+                  <th className="py-1.5 px-2.5">Kesim Tarihi</th>
+                  <th className="py-1.5 px-2.5 text-right">Mutabakat Bakiyesi</th>
+                  <th className="py-1.5 px-2.5 text-center">Gönderilen Kanal</th>
+                  <th className="py-1.5 px-2.5 text-center">Gönderim Zamanı</th>
+                  <th className="py-1.5 px-2.5 text-right">İşlemler</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
@@ -634,19 +633,19 @@ export const Reconciliation: React.FC = () => {
                   const balanceNum = Number(pItem.balance) || 0;
                   return (
                     <tr key={pItem.id} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="py-2.5 px-3">
-                        <div className="font-bold text-white text-xs">{pItem.firm_name}</div>
-                        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                      <td className="py-1.5 px-2.5">
+                        <div className="font-semibold text-white text-xs">{pItem.firm_name}</div>
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400">
                           {pItem.phone && <span>📱 {pItem.phone}</span>}
                           {pItem.email && <span>✉️ {pItem.email}</span>}
                         </div>
                       </td>
-                      <td className="py-2.5 px-3">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800 text-slate-200 font-mono text-[11px] border border-slate-700">
+                      <td className="py-1.5 px-2.5 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-mono text-[10.5px] border border-slate-700">
                           🗓️ {formatDateTR(pItem.period)}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-bold">
+                      <td className="py-1.5 px-2.5 text-right font-mono font-bold whitespace-nowrap">
                         {balanceNum > 0 ? (
                           <span className="text-rose-400">{balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borç)</span>
                         ) : balanceNum < 0 ? (
@@ -655,47 +654,47 @@ export const Reconciliation: React.FC = () => {
                           <span className="text-slate-400">0.00 TL (Denk)</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[11px] font-semibold">
-                          {pItem.sent_channels === 'BOTH' ? '📱 + ✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
+                      <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-semibold">
+                          {pItem.sent_channels === 'BOTH' ? '📱+✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-center text-slate-400 text-[11px]">
+                      <td className="py-1.5 px-2.5 text-center text-slate-400 text-[10.5px] whitespace-nowrap">
                         {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
                       </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                      <td className="py-1.5 px-2.5 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={() => handleCopyLink(pItem.token)}
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
                             title="Onay Linkini Kopyala"
                           >
-                            {copiedToken === pItem.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedToken === pItem.token ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                           </button>
                           <a
                             href={`/mutabakat/${pItem.token}/pdf`}
                             target="_blank"
                             rel="noreferrer"
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
                             title="PDF İndir / Önizle"
                           >
-                            <Download className="w-3.5 h-3.5" />
+                            <Download className="w-3 h-3" />
                           </a>
                           <button
                             onClick={() => handleSendSingle(pItem)}
                             disabled={sendingSingleId === pItem.id}
-                            className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors disabled:opacity-50"
+                            className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1 transition-colors disabled:opacity-50"
                             title="Tekrar Hatırlatma Gönder"
                           >
-                            {sendingSingleId === pItem.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                            {sendingSingleId === pItem.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Send className="w-2.5 h-2.5" />}
                             <span>Hatırlat</span>
                           </button>
                           <button
                             onClick={() => handleResetStatus(pItem.id)}
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
                             title="Durumu Sıfırla (Gönderilmediye Al)"
                           >
-                            <RefreshCw className="w-3.5 h-3.5" />
+                            <RefreshCw className="w-3 h-3" />
                           </button>
                         </div>
                       </td>
@@ -709,98 +708,98 @@ export const Reconciliation: React.FC = () => {
       </div>
 
       {/* 4. ARAMA VE FİLTRELEME ÇUBUĞU */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         {/* Filtre Sekmeleri */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+        <div className="flex items-center gap-1 overflow-x-auto pb-0.5 text-xs">
           <button
             onClick={() => setStatusFilter('all')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'all' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             Tümü ({items.length})
           </button>
           <button
             onClick={() => setStatusFilter('HAS_BOTH')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'HAS_BOTH' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'HAS_BOTH' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             📱+✉️ İki Kanalı Olan ({stats.hasBoth || 0})
           </button>
           <button
             onClick={() => setStatusFilter('PHONE_ONLY')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'PHONE_ONLY' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'PHONE_ONLY' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             📱 Sadece WhatsApp ({stats.hasPhone ? Math.max(0, stats.hasPhone - (stats.hasBoth || 0)) : 0})
           </button>
           <button
             onClick={() => setStatusFilter('EMAIL_ONLY')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'EMAIL_ONLY' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'EMAIL_ONLY' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             ✉️ Sadece E-Posta ({stats.hasEmail ? Math.max(0, stats.hasEmail - (stats.hasBoth || 0)) : 0})
           </button>
           <button
             onClick={() => setStatusFilter('APPROVED')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'APPROVED' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'APPROVED' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             ✅ Mutabık ({stats.approved})
           </button>
           <button
             onClick={() => setStatusFilter('DISPUTED')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'DISPUTED' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'DISPUTED' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             ⚠️ Fark Bildiren ({stats.disputed})
           </button>
           <button
             onClick={() => setStatusFilter('SENT')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'SENT' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'SENT' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
             ⏳ Bekleyen ({stats.pending})
           </button>
           <button
             onClick={() => setStatusFilter('MISSING_CONTACT')}
-            className={`px-3 py-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap ${statusFilter === 'MISSING_CONTACT' ? 'bg-rose-700 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+            className={`px-2.5 py-1 rounded-lg font-semibold transition-colors whitespace-nowrap text-xs ${statusFilter === 'MISSING_CONTACT' ? 'bg-rose-700 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
           >
-            ⚠️ İletişim Bilgisi Eksik ({stats.missingContact || 0})
+            ⚠️ Eksik İletişim ({stats.missingContact || 0})
           </button>
         </div>
 
         {/* Arama Input */}
-        <div className="relative w-full sm:w-64">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <div className="relative w-full sm:w-60">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Firma, telefon veya e-posta ara..."
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white outline-none focus:border-emerald-500"
+            className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-2.5 py-1 text-xs text-white outline-none focus:border-emerald-500"
           />
         </div>
       </div>
 
-      {/* 5. FİRMA VE MUTABAKAT TABLOSU */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+      {/* 5. FİRMA VE MUTABAKAT TABLOSU (KOMPAKT HÜCRELER) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold">
+            <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold text-[11px]">
               <tr>
-                <th className="py-3 px-4">Firma Adı</th>
-                <th className="py-3 px-4">İletişim Bilgileri (WhatsApp & E-Posta)</th>
-                <th className="py-3 px-4 text-center">Hedef Kanal</th>
-                <th className="py-3 px-4 text-right">Dönem Bakiyesi</th>
-                <th className="py-3 px-4 text-center">Mutabakat Durumu</th>
-                <th className="py-3 px-4 text-right">İşlemler</th>
+                <th className="py-2 px-3">Firma Adı</th>
+                <th className="py-2 px-3">İletişim Bilgileri (WhatsApp & E-Posta)</th>
+                <th className="py-2 px-3 text-center">Hedef Kanal</th>
+                <th className="py-2 px-3 text-right">Dönem Bakiyesi</th>
+                <th className="py-2 px-3 text-center">Mutabakat Durumu</th>
+                <th className="py-2 px-3 text-right">İşlemler</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-400">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-emerald-400" />
+                  <td colSpan={6} className="py-8 text-center text-slate-400">
+                    <Loader2 className="w-5 h-5 animate-spin mx-auto mb-1.5 text-emerald-400" />
                     <span>Mutabakat verileri hesaplanıyor...</span>
                   </td>
                 </tr>
               ) : filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500">
-                    Bu filtre ile eşleşen firma kaydı bulunamadı. "Listeyi Hesapla & Hazırla" butonuna basarak dönemi güncelleyebilirsiniz.
+                  <td colSpan={6} className="py-8 text-center text-slate-500 text-xs">
+                    Bu filtre ile eşleşen firma kaydı bulunamadı. "Bakiyeleri Hesapla" butonuna basarak dönemi güncelleyebilirsiniz.
                   </td>
                 </tr>
               ) : (
@@ -813,71 +812,71 @@ export const Reconciliation: React.FC = () => {
                   return (
                     <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
                       {/* Firma Adı */}
-                      <td className="py-3 px-4">
-                        <div className="font-bold text-slate-200">{item.firm_name}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">
+                      <td className="py-1.5 px-3">
+                        <div className="font-semibold text-slate-200 text-xs leading-tight">{item.firm_name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 leading-none">
                           Fatura: {item.total_billed?.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL | 
                           Ödenen: {item.total_paid?.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
                         </div>
                       </td>
 
                       {/* İletişim Bilgileri (Telefon & E-Posta) */}
-                      <td className="py-3 px-4">
+                      <td className="py-1.5 px-3">
                         {isEditingContact ? (
-                          <div className="flex flex-col gap-1.5 bg-slate-950 p-2 rounded-xl border border-emerald-500/50">
+                          <div className="flex flex-col gap-1 bg-slate-950 p-1.5 rounded-lg border border-emerald-500/50">
                             <div className="flex items-center gap-1.5">
-                              <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <Phone className="w-3 h-3 text-emerald-400 shrink-0" />
                               <input
                                 type="text"
                                 value={editedPhone}
                                 onChange={(e) => setEditedPhone(e.target.value)}
                                 placeholder="05xx xxx xx xx"
-                                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-xs w-36 outline-none focus:border-emerald-500"
+                                className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-white text-[11px] w-32 outline-none focus:border-emerald-500 font-mono"
                               />
                             </div>
                             <div className="flex items-center gap-1.5">
-                              <Mail className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                              <Mail className="w-3 h-3 text-sky-400 shrink-0" />
                               <input
                                 type="email"
                                 value={editedEmail}
                                 onChange={(e) => setEditedEmail(e.target.value)}
                                 placeholder="muhasebe@firma.com"
-                                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white text-xs w-48 outline-none focus:border-sky-500"
+                                className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-white text-[11px] w-40 outline-none focus:border-sky-500"
                               />
                             </div>
-                            <div className="flex items-center justify-end gap-1.5 pt-1">
+                            <div className="flex items-center justify-end gap-1 pt-0.5">
                               <button
                                 type="button"
                                 onClick={() => setEditingContactFirmId(null)}
-                                className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 hover:text-white text-[10px]"
+                                className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 hover:text-white text-[9.5px]"
                               >
                                 İptal
                               </button>
                               <button
                                 type="button"
                                 onClick={() => handleSaveContact(item.firm_id)}
-                                className="px-2.5 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 text-[10px] font-bold flex items-center gap-1"
+                                className="px-2 py-0.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 text-[9.5px] font-bold flex items-center gap-1"
                               >
-                                <Check className="w-3 h-3" /> Kaydet
+                                <Check className="w-2.5 h-2.5" /> Kaydet
                               </button>
                             </div>
                           </div>
                         ) : (
-                          <div className="space-y-1 group">
+                          <div className="space-y-0.5 group">
                             {/* Telefon */}
-                            <div className="flex items-center gap-1.5">
-                              <Phone className="w-3 h-3 text-emerald-400 shrink-0" />
+                            <div className="flex items-center gap-1 text-[11px]">
+                              <Phone className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
                               {hasPhone ? (
                                 <span className="font-mono text-slate-300">{item.phone}</span>
                               ) : (
-                                <span className="text-slate-500 italic text-[10px]">Telefon Yok</span>
+                                <span className="text-slate-500 italic text-[10px]">Tel Yok</span>
                               )}
                             </div>
                             {/* E-Posta */}
-                            <div className="flex items-center gap-1.5">
-                              <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                            <div className="flex items-center gap-1 text-[11px]">
+                              <Mail className="w-2.5 h-2.5 text-sky-400 shrink-0" />
                               {hasEmail ? (
-                                <span className="text-slate-300 truncate max-w-[180px]" title={item.email}>{item.email}</span>
+                                <span className="text-slate-300 truncate max-w-[160px]" title={item.email}>{item.email}</span>
                               ) : (
                                 <span className="text-slate-500 italic text-[10px]">E-Posta Yok</span>
                               )}
@@ -888,10 +887,10 @@ export const Reconciliation: React.FC = () => {
                                   setEditedPhone(item.phone || '');
                                   setEditedEmail(item.email || '');
                                 }}
-                                className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white transition-opacity ml-auto"
+                                className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-white transition-opacity ml-1"
                                 title="İletişim Bilgilerini Düzenle"
                               >
-                                <Edit2 className="w-3 h-3" />
+                                <Edit2 className="w-2.5 h-2.5" />
                               </button>
                             </div>
                           </div>
@@ -899,112 +898,112 @@ export const Reconciliation: React.FC = () => {
                       </td>
 
                       {/* Hedef Kanal Rozeti */}
-                      <td className="py-3 px-4 text-center">
+                      <td className="py-1.5 px-3 text-center whitespace-nowrap">
                         {hasPhone && hasEmail ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-gradient-to-r from-emerald-500/20 to-sky-500/20 border border-sky-500/30 text-sky-300 text-[11px] font-bold">
-                            <span>📱 + ✉️ İkisi Birden</span>
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-gradient-to-r from-emerald-500/15 to-sky-500/15 border border-sky-500/30 text-sky-300 text-[10px] font-bold">
+                            <span>📱+✉️ İkisi</span>
                           </span>
                         ) : hasPhone ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10.5px] font-medium">
-                            <Smartphone className="w-3 h-3" /> Sadece WhatsApp
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-medium">
+                            <Smartphone className="w-2.5 h-2.5" /> WhatsApp
                           </span>
                         ) : hasEmail ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-[10.5px] font-medium">
-                            <Mail className="w-3 h-3" /> Sadece E-Posta
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-sky-400 text-[10px] font-medium">
+                            <Mail className="w-2.5 h-2.5" /> E-Posta
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[10px] font-semibold">
-                            ⚠️ İletişim Yok
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[9.5px] font-semibold">
+                            İletişim Yok
                           </span>
                         )}
 
                         {item.sent_channels && (
-                          <div className="text-[9.5px] text-slate-400 mt-1">
-                            İletilen: <strong className="text-emerald-400">{item.sent_channels === 'BOTH' ? 'WhatsApp + E-Posta' : item.sent_channels}</strong>
+                          <div className="text-[9px] text-slate-400 mt-0.5 leading-none">
+                            {item.sent_channels === 'BOTH' ? '📱+✉️ Gönderildi' : `${item.sent_channels} Gönderildi`}
                           </div>
                         )}
                       </td>
 
                       {/* Bakiye */}
-                      <td className="py-3 px-4 text-right font-mono font-bold">
+                      <td className="py-1.5 px-3 text-right font-mono font-bold whitespace-nowrap text-xs">
                         {balanceNum > 0 ? (
                           <span className="text-rose-400">
-                            {balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borçlu)
+                            {balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Borç)</span>
                           </span>
                         ) : balanceNum < 0 ? (
                           <span className="text-emerald-400">
-                            {Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacaklı)
+                            {Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Alacak)</span>
                           </span>
                         ) : (
-                          <span className="text-slate-400">0.00 TL (Denk)</span>
+                          <span className="text-slate-400">0.00 TL</span>
                         )}
                       </td>
 
                       {/* Durum Rozeti */}
-                      <td className="py-3 px-4 text-center">
+                      <td className="py-1.5 px-3 text-center whitespace-nowrap">
                         {item.status === 'APPROVED' ? (
-                          <div className="flex flex-col items-center">
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold">
-                              <CheckCircle2 className="w-3.5 h-3.5" /> Mutabık
+                          <div className="inline-flex flex-col items-center">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">
+                              <CheckCircle2 className="w-3 h-3" /> Mutabık
                             </span>
                             {item.responder_name && (
-                              <div className="text-[10px] text-slate-300 font-semibold mt-1 truncate max-w-[160px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
-                                👤 {item.responder_name} {item.responder_title ? `(${item.responder_title})` : ''}
+                              <div className="text-[9.5px] text-slate-300 mt-0.5 truncate max-w-[140px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
+                                👤 {item.responder_name}
                               </div>
                             )}
                           </div>
                         ) : item.status === 'DISPUTED' ? (
-                          <div className="flex flex-col items-center">
+                          <div className="inline-flex flex-col items-center">
                             <button
                               type="button"
                               onClick={() => setSelectedDisputeItem(item)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] font-bold hover:bg-rose-500/20 transition-colors"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 border border-rose-500/30 text-rose-400 text-[10px] font-bold hover:bg-rose-500/25 transition-colors"
                               title="Müşteri itiraz notunu incelemek için tıklayın"
                             >
-                              <AlertTriangle className="w-3.5 h-3.5" /> Fark Bildirildi
+                              <AlertTriangle className="w-3 h-3" /> Fark Bildirildi
                             </button>
                             {item.responder_name && (
-                              <div className="text-[10px] text-rose-300/80 mt-1 truncate max-w-[160px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
-                                👤 {item.responder_name} {item.responder_title ? `(${item.responder_title})` : ''}
+                              <div className="text-[9.5px] text-rose-300/80 mt-0.5 truncate max-w-[140px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
+                                👤 {item.responder_name}
                               </div>
                             )}
                           </div>
                         ) : item.status === 'SENT' ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-medium">
-                            <Clock className="w-3.5 h-3.5" /> Yanıt Bekleniyor
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-medium">
+                            <Clock className="w-3 h-3" /> Yanıt Bekleniyor
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 text-slate-400 text-[11px]">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-400 text-[10px]">
                             Gönderilmedi
                           </span>
                         )}
                       </td>
 
                       {/* İşlemler */}
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                      <td className="py-1.5 px-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1">
                           {/* PDF İncele */}
                           <a
                             href={`/mutabakat/${item.token}/pdf`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                            className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
                             title="Resmi Mutabakat Mektubu ve Cari Ekstreyi İndir (PDF)"
                           >
-                            <Download className="w-4 h-4" />
+                            <Download className="w-3.5 h-3.5" />
                           </a>
 
                           {/* Link Kopyala */}
                           <button
                             type="button"
                             onClick={() => handleCopyLink(item.token)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-sky-400 hover:bg-slate-800 transition-colors"
+                            className="p-1 rounded text-slate-400 hover:text-sky-400 hover:bg-slate-800 transition-colors"
                             title="Müşteri Onay Bağlantısını Kopyala"
                           >
                             {copiedToken === item.token ? (
-                              <Check className="w-4 h-4 text-emerald-400" />
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
                             ) : (
-                              <Copy className="w-4 h-4" />
+                              <Copy className="w-3.5 h-3.5" />
                             )}
                           </button>
 
@@ -1013,7 +1012,7 @@ export const Reconciliation: React.FC = () => {
                             type="button"
                             onClick={() => handleSendSingle(item)}
                             disabled={sendingSingleId === item.id || (!hasPhone && !hasEmail)}
-                            className={`p-1.5 rounded-lg transition-colors disabled:opacity-30 ${
+                            className={`p-1 rounded transition-colors disabled:opacity-30 ${
                               hasPhone && hasEmail
                                 ? 'text-sky-400 hover:text-sky-300 hover:bg-sky-500/10'
                                 : hasPhone
@@ -1031,9 +1030,9 @@ export const Reconciliation: React.FC = () => {
                             }
                           >
                             {sendingSingleId === item.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
                             ) : (
-                              <Send className="w-4 h-4" />
+                              <Send className="w-3.5 h-3.5" />
                             )}
                           </button>
                         </div>
