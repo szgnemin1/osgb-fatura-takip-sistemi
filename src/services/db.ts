@@ -861,6 +861,37 @@ export const db = {
     return data;
   },
 
+  remindPendingReconciliations: async (reconciliationIds?: string[], minDays?: number): Promise<{ success: boolean; totalEligible: number; message: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/remind-pending', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reconciliationIds, minDays })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Hatırlatma gönderilemedi.');
+    return data;
+  },
+
+  downloadReconciliationZip: async (period?: string, status: string = 'APPROVED') => {
+    const params = new URLSearchParams();
+    if (period) params.append('period', period);
+    if (status) params.append('status', status);
+    const res = await fetchWithAuth(`/api/reconciliation/export-zip?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'ZIP arşivi indirilemedi.' }));
+      throw new Error(err.error || 'ZIP arşivi indirilemedi.');
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Onayli_Mutabakatlar_${period || 'Tumu'}_${new Date().toISOString().slice(0, 10)}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  },
+
   updateFirmPhone: async (firmId: string, phone: string): Promise<{ success: boolean }> => {
     const res = await fetchWithAuth('/api/reconciliation/update-phone', {
       method: 'POST',

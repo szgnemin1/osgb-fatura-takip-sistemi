@@ -17,6 +17,7 @@ const rateLimit = require('express-rate-limit');
 const { jsPDF } = require('jspdf');
 require('jspdf-autotable');
 const nodemailer = require('nodemailer');
+const archiver = require('archiver');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -166,6 +167,8 @@ if (!fs.existsSync(usersPath)) {
     }
 }
 const sqlitePath = path.join(dbDir, 'database.sqlite');
+const reconciliationFilesDir = path.join(dbDir, 'reconciliation_files');
+if (!fs.existsSync(reconciliationFilesDir)) { try { fs.mkdirSync(reconciliationFilesDir, { recursive: true }); } catch (_) {} }
 
 let db;
 
@@ -515,6 +518,12 @@ async function createDatabaseBackup() {
         }
         if (!recColNames.includes('responder_title')) {
             await db.run("ALTER TABLE reconciliations ADD COLUMN responder_title TEXT;");
+        }
+        if (!recColNames.includes('dispute_file_path')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN dispute_file_path TEXT;");
+        }
+        if (!recColNames.includes('dispute_file_name')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN dispute_file_name TEXT;");
         }
     } catch (migErr) {
         console.error("Reconciliations migration hatası:", migErr);
@@ -3492,7 +3501,7 @@ function getBaseUrl(req) {
     return `${protocol}://${host}`;
 }
 
-function buildReconciliationCaption(firm, rec, approvalUrl) {
+function buildReconciliationCaption(firm, rec, approvalUrl, isReminder = false) {
     const balanceNum = Number(rec.balance) || 0;
     let bakiyeStr = "0.00 TL (HESABIMIZ DENKTİR)";
     if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇLU`;
@@ -3500,8 +3509,13 @@ function buildReconciliationCaption(firm, rec, approvalUrl) {
 
     const displayPeriod = formatPeriodDisplay(rec.period);
 
+    const reminderHeader = isReminder ? `🔔 *CARİ MUTABAKAT HATIRLATMASI*\n\n` : ``;
+    const reminderNote = isReminder ? `⚠️ *Hatırlatma:* Tarafınıza daha önce iletilen mutabakat mektubu için henüz onay/itiraz bildiriminiz alınamamıştır. Yasal kayıtlarımızla mutabakatınızı tamamlamak için lütfen kontrol ediniz.\n\n` : ``;
+
     return (
+        reminderHeader +
         `Sayın Yetkili (*${firm.name}*),\n\n` +
+        reminderNote +
         `6102 sayılı TTK m. 94 ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${displayPeriod}* tarihi itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
         `👉 *${bakiyeStr}* olarak tespit edilmiştir.\n\n` +
         `Resmi mutabakat mektubunuz ve ayrıntılı hesap dökümünüz ekteki PDF belgesinde yer almaktadır.\n\n` +
@@ -3812,7 +3826,7 @@ function createMailTransporter(settings) {
     });
 }
 
-async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename) {
+async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, isReminder = false) {
     const smtp = await getSmtpSettings();
     if (!smtp || !smtp.host || !smtp.user) {
         throw new Error('E-posta (SMTP) sunucu ayarları yapılandırılmamış. Lütfen SMTP Ayarları menüsünden bilgilerinizi kaydedin.');
@@ -3877,6 +3891,11 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
             <!-- Gövde -->
             <tr>
                 <td style="padding: 32px 28px;">
+                    ${isReminder ? `
+                    <div style="background-color: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 12.5px; color: #92400e; font-weight: 600;">
+                        🔔 <strong>MUTABAKAT HATIRLATMASI:</strong> Bu mutabakat mektubu tarafınıza daha önce iletilmiş olup henüz yanıtınız alınamamıştır. Lütfen aşağıdaki bilgileri inceleyerek teyit ediniz.
+                    </div>
+                    ` : ''}
                     <p style="font-size: 15px; color: #1e293b; margin: 0 0 16px; font-weight: 700;">
                         Sayın Yetkili (<strong>${escapeHtml(firm.name || 'Değerli Müşterimiz')}</strong>),
                     </p>
@@ -3959,7 +3978,7 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
     const mailOptions = {
         from: fromAddress,
         to: targetEmail,
-        subject: `Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
+        subject: `${isReminder ? '[HATIRLATMA] ' : ''}Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
         html: htmlContent,
         attachments: [
             {
@@ -3974,7 +3993,7 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
 }
 
 // Birleşik Çoklu Kanal Gönderim Fonksiyonu (WhatsApp + E-Posta)
-async function dispatchReconciliationItem(rec, req) {
+async function dispatchReconciliationItem(rec, req, isReminder = false) {
     const firm = await getFirmById(rec.firm_id);
     if (!firm) throw new Error('Firma kaydı bulunamadı.');
 
@@ -4004,7 +4023,7 @@ async function dispatchReconciliationItem(rec, req) {
     if (hasPhone) {
         if (isWaConnected && waSocket) {
             try {
-                const caption = buildReconciliationCaption(firm, rec, approvalUrl);
+                const caption = buildReconciliationCaption(firm, rec, approvalUrl, isReminder);
                 const jid = `${targetPhone}@s.whatsapp.net`;
                 await waSocket.sendMessage(jid, {
                     document: pdfBuffer,
@@ -4025,7 +4044,7 @@ async function dispatchReconciliationItem(rec, req) {
     // 2. E-Posta Gönderimi (Eğer e-posta varsa)
     if (hasEmail) {
         try {
-            await sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename);
+            await sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, isReminder);
             sentChannelsList.push('EMAIL');
         } catch (mailErr) {
             console.error(`E-posta gönderim hatası (${targetEmail}):`, mailErr.message);
@@ -4046,11 +4065,11 @@ async function dispatchReconciliationItem(rec, req) {
 
     const now = new Date().toISOString();
     await db.run(
-        "UPDATE reconciliations SET status = 'SENT', sent_at = ?, sent_channels = ?, updated_at = ? WHERE id = ?",
+        "UPDATE reconciliations SET status = 'SENT', sent_at = COALESCE(sent_at, ?), sent_channels = ?, updated_at = ? WHERE id = ?",
         [now, channelCode, now, rec.id]
     );
 
-    await logAuditEvent(req, 'RECONCILIATION_SENT', {
+    await logAuditEvent(req, isReminder ? 'RECONCILIATION_REMINDED' : 'RECONCILIATION_SENT', {
         firmId: rec.firm_id,
         channels: sentChannelsList,
         phone: hasPhone ? targetPhone : null,
@@ -4079,7 +4098,7 @@ async function getReconciliationManagerPhone() {
 }
 
 // Mutabakata Yanıt Geldiğinde Yöneticiye WhatsApp Bildirimi İlet
-async function notifyManagerOnReconciliationResponse({ rec, firm, dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, clientIp, req }) {
+async function notifyManagerOnReconciliationResponse({ rec, firm, dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, clientIp, req, disputeFileName, disputeFilePath }) {
     try {
         if (!isWaConnected || !waSocket) {
             console.log('[Yönetici Bildirimi] WhatsApp bağlı olmadığı için bildirim gönderilemedi.');
@@ -4133,6 +4152,12 @@ async function notifyManagerOnReconciliationResponse({ rec, firm, dbStatus, stat
         }
 
         const baseUrl = getBaseUrl(req);
+        if (disputeFileName && disputeFilePath) {
+            message += 
+                `━━━━━━━━━━━━━━━━━━━━━\n` +
+                `📎 *Müşteri Ekstre Belgesi:* ${disputeFileName}\n` +
+                `🔗 *Belgeyi İndir / Aç:*\n${baseUrl}/api/mutabakat/dispute-file/${rec.token}\n`;
+        }
         message += 
             `━━━━━━━━━━━━━━━━━━━━━\n` +
             `🌐 *Müşteri IP:* ${clientIp || 'Bilinmiyor'}\n` +
@@ -4299,6 +4324,8 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
                 response_note: r.response_note,
                 responder_name: r.responder_name || '',
                 responder_title: r.responder_title || '',
+                dispute_file_path: r.dispute_file_path || null,
+                dispute_file_name: r.dispute_file_name || null,
                 client_ip: r.client_ip,
                 created_at: r.created_at,
                 updated_at: r.updated_at
@@ -4739,7 +4766,7 @@ app.get('/mutabakat/:token/pdf', async (req, res) => {
 app.post('/api/mutabakat/public-respond', async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
-        const { token, status, responseBalance, responseNote, responderName, responderTitle } = req.body;
+        const { token, status, responseBalance, responseNote, responderName, responderTitle, disputeFile, disputeFileName } = req.body;
         
         if (!token || !RECONCILIATION_TOKEN_REGEX.test(token)) {
             return res.status(400).json({ error: 'Geçersiz mutabakat anahtarı formatı.' });
@@ -4784,6 +4811,33 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
             return res.status(400).json({ error: 'Bu mutabakat daha önce resmi olarak onaylanmıştır ve üzerinde değişiklik yapılamaz.' });
         }
 
+        let savedDisputeFilePath = null;
+        let savedDisputeFileName = null;
+
+        if (status === 'FARK_VAR' && disputeFile && disputeFileName) {
+            try {
+                let base64Data = String(disputeFile);
+                if (base64Data.includes(',')) {
+                    base64Data = base64Data.split(',')[1];
+                }
+                const fileBuf = Buffer.from(base64Data, 'base64');
+                if (fileBuf.length <= 15 * 1024 * 1024) {
+                    const ext = path.extname(disputeFileName).toLowerCase();
+                    const allowedExts = ['.pdf', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.doc', '.docx'];
+                    if (allowedExts.includes(ext)) {
+                        const safeOriginalName = path.basename(disputeFileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+                        savedDisputeFileName = safeOriginalName;
+                        const diskFileName = `${token}_${Date.now()}_${safeOriginalName}`;
+                        savedDisputeFilePath = path.join(reconciliationFilesDir, diskFileName);
+                        fs.writeFileSync(savedDisputeFilePath, fileBuf);
+                        console.log('[Mutabakat Ekstre] Müşteri ekstresi başarıyla kaydedildi:', savedDisputeFilePath);
+                    }
+                }
+            } catch (fileErr) {
+                console.error('[Mutabakat Ekstre Kayıt Hatası]:', fileErr.message);
+            }
+        }
+
         const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'Bilinmiyor';
         const now = new Date().toISOString();
 
@@ -4792,9 +4846,11 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
         await db.run(
             `UPDATE reconciliations 
              SET status = ?, response_status = ?, response_balance = ?, response_note = ?, 
-                 responder_name = ?, responder_title = ?, response_at = ?, client_ip = ?, updated_at = ?
+                 responder_name = ?, responder_title = ?, response_at = ?, client_ip = ?, updated_at = ?,
+                 dispute_file_path = COALESCE(?, dispute_file_path),
+                 dispute_file_name = COALESCE(?, dispute_file_name)
              WHERE token = ?`,
-            [dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, now, clientIp, now, token]
+            [dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, now, clientIp, now, savedDisputeFilePath, savedDisputeFileName, token]
         );
 
         io.emit('mutabakat_response_received', {
@@ -4816,13 +4872,192 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
             cleanName,
             cleanTitle,
             clientIp,
-            req
+            req,
+            disputeFileName: savedDisputeFileName,
+            disputeFilePath: savedDisputeFilePath
         }).catch(err => console.error('[Yönetici Bildirimi Hatası]:', err));
 
         res.json({ success: true, message: 'Yanıtınız başarıyla kaydedildi. Teşekkür ederiz.' });
     } catch (e) {
         console.error('Müşteri mutabakat yanıt hatası:', e);
         res.status(500).json({ error: 'Yanıtınız kaydedilemedi: ' + e.message });
+    }
+});
+
+
+// Müşterinin Yüklediği Karşı Ekstre / İtiraz Belgesini İndir / Görüntüle
+app.get('/api/mutabakat/dispute-file/:token', async (req, res) => {
+    try {
+        if (!db) return res.status(500).send('Veritabanı hazır değil.');
+        const { token } = req.params;
+        if (!token || !RECONCILIATION_TOKEN_REGEX.test(token)) {
+            return res.status(400).send('Geçersiz bağlantı formatı.');
+        }
+
+        const rec = await db.get("SELECT dispute_file_path, dispute_file_name FROM reconciliations WHERE token = ?", [token]);
+        if (!rec || !rec.dispute_file_path || !fs.existsSync(rec.dispute_file_path)) {
+            return res.status(404).send('Müşteriye ait ekstre veya itiraz belgesi bulunamadı.');
+        }
+
+        const filename = rec.dispute_file_name || 'karsi_ekstre';
+        res.download(rec.dispute_file_path, filename);
+    } catch (e) {
+        console.error('Ekstre belgesi getirme hatası:', e);
+        res.status(500).send('Dosya indirilemedi.');
+    }
+});
+
+// Toplu Onaylı Mutabakat PDF Arşivi (ZIP) İndir
+app.get('/api/reconciliation/export-zip', authenticateToken, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { period, status = 'APPROVED' } = req.query;
+
+        let query = "SELECT r.*, f.data as firm_data FROM reconciliations r LEFT JOIN firms f ON r.firm_id = f.id WHERE 1=1";
+        const params = [];
+
+        if (status && status !== 'ALL') {
+            query += " AND r.status = ?";
+            params.push(status);
+        }
+        if (period) {
+            query += " AND r.period = ?";
+            params.push(period);
+        }
+        query += " ORDER BY r.period DESC, r.response_at DESC, r.firm_id ASC";
+
+        const rows = await db.all(query, params);
+        if (!rows || rows.length === 0) {
+            return res.status(404).json({ error: 'Arşivlenecek mutabakat kaydı bulunamadı.' });
+        }
+
+        const safePeriod = period ? period.replace(/[^\w-]/g, '_') : 'Tumu';
+        const zipFilename = `Onayli_Mutabakatlar_${safePeriod}_${new Date().toISOString().slice(0, 10)}.zip`;
+
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+        const archive = archiver('zip', { zlib: { level: 9 } });
+
+        archive.on('warning', (err) => {
+            if (err.code === 'ENOENT') console.warn('ZIP warning:', err);
+            else throw err;
+        });
+
+        archive.on('error', (err) => {
+            console.error('ZIP archive generation error:', err);
+            if (!res.headersSent) res.status(500).send({ error: err.message });
+        });
+
+        archive.pipe(res);
+
+        const usedNames = new Set();
+        for (const r of rows) {
+            let firm = null;
+            try {
+                if (r.firm_data) firm = JSON.parse(r.firm_data);
+            } catch (_) {}
+            if (!firm) firm = { name: 'Firma_' + r.firm_id };
+
+            const transactions = await getTransactionsForFirm(r.firm_id, r.period);
+            const pdfBuffer = generateReconciliationPDF(firm, r.period, r.balance, r.total_billed, r.total_paid, transactions);
+            const safeFirmName = replaceTR(firm.name || 'Firma').replace(/[^a-zA-Z0-9_-]/g, '_');
+            
+            let entryName = `${safeFirmName}_Mutabakat_${r.period}.pdf`;
+            if (usedNames.has(entryName)) {
+                entryName = `${safeFirmName}_Mutabakat_${r.period}_${r.token.slice(0, 6)}.pdf`;
+            }
+            usedNames.add(entryName);
+
+            archive.append(pdfBuffer, { name: entryName });
+        }
+
+        await archive.finalize();
+    } catch (e) {
+        console.error('ZIP indirme hatası:', e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'ZIP arşivi oluşturulamadı: ' + e.message });
+        }
+    }
+});
+
+// Müşteri Onayı Bekleyenlere Toplu & Akıllı Hatırlatma
+app.post('/api/reconciliation/remind-pending', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { reconciliationIds, minDays = 0 } = req.body;
+
+        let query = "SELECT * FROM reconciliations WHERE status = 'SENT'";
+        const params = [];
+
+        if (Array.isArray(reconciliationIds) && reconciliationIds.length > 0) {
+            query += ` AND id IN (${reconciliationIds.map(() => '?').join(',')})`;
+            params.push(...reconciliationIds);
+        }
+
+        query += " ORDER BY sent_at ASC";
+        const recs = await db.all(query, params);
+
+        const nowMs = Date.now();
+        const eligibleRecs = [];
+        for (const r of recs) {
+            if (minDays > 0 && r.sent_at) {
+                const days = Math.floor((nowMs - new Date(r.sent_at).getTime()) / (1000 * 60 * 60 * 24));
+                if (days < minDays) continue;
+            }
+            const firm = await getFirmById(r.firm_id);
+            const hasPhone = Boolean(formatPhoneForWhatsApp(r.phone || firm?.phone));
+            const hasEmail = Boolean((r.email || firm?.email || '').trim().includes('@'));
+            if (hasPhone || hasEmail) {
+                eligibleRecs.push({ ...r, _hasPhone: hasPhone, _hasEmail: hasEmail });
+            }
+        }
+
+        if (eligibleRecs.length === 0) {
+            return res.status(400).json({ error: 'Hatırlatma gönderilecek uygun firma bulunamadı (Telefon/E-posta eksik veya bekleme süresi şartı sağlanmıyor).' });
+        }
+
+        // Arka planda sıra ile hatırlat
+        (async () => {
+            console.log(`[Mutabakat Hatırlatma] ${eligibleRecs.length} firmaya hatırlatma süreci başlatıldı.`);
+            let sentCount = 0;
+
+            for (const rec of eligibleRecs) {
+                try {
+                    const firm = await getFirmById(rec.firm_id);
+                    if (!firm) continue;
+
+                    const result = await dispatchReconciliationItem(rec, req, true);
+                    sentCount++;
+
+                    io.emit('reconciliation_progress', {
+                        current: sentCount,
+                        total: eligibleRecs.length,
+                        firmName: firm.name,
+                        channel: result.sentChannels,
+                        status: 'SUCCESS'
+                    });
+
+                    // Anti-Spam Gecikmesi: WhatsApp için 3-5 sn, E-posta için 1 sn
+                    const isWa = result.sentChannels === 'WHATSAPP' || result.sentChannels === 'BOTH';
+                    const delayMs = isWa ? (Math.floor(Math.random() * 2000) + 3000) : 1000;
+                    await new Promise(r => setTimeout(r, delayMs));
+
+                } catch (sendErr) {
+                    console.error(`[Mutabakat Hatırlatma] Firma ${rec.firm_id} gönderilemedi:`, sendErr.message);
+                }
+            }
+            console.log(`[Mutabakat Hatırlatma] Tamamlandı. ${sentCount} firmaya hatırlatma yapıldı.`);
+        })().catch(err => console.error('[Mutabakat Hatırlatma] Arka plan hatası:', err));
+
+        res.json({
+            success: true,
+            totalEligible: eligibleRecs.length,
+            message: `${eligibleRecs.length} onay bekleyen firmaya hatırlatma gönderim kuyruğu başlatıldı.`
+        });
+    } catch (e) {
+        console.error('Toplu hatırlatma hatası:', e);
+        res.status(500).json({ error: 'Hatırlatma başlatılamadı: ' + e.message });
     }
 });
 
@@ -5116,6 +5351,24 @@ app.get('/mutabakat/:token', async (req, res) => {
                             return;
                         }
 
+                        let disputeFileBase64 = null;
+                        let disputeFileName = null;
+                        const fileInput = document.getElementById('disputeFile');
+                        if (fileInput && fileInput.files && fileInput.files[0]) {
+                            const f = fileInput.files[0];
+                            if (f.size > 15 * 1024 * 1024) {
+                                alert('Yüklenen dosya boyutu 15MB sınırını aşamaz.');
+                                return;
+                            }
+                            disputeFileName = f.name;
+                            disputeFileBase64 = await new Promise((res, rej) => {
+                                const r = new FileReader();
+                                r.onload = () => res(r.result);
+                                r.onerror = rej;
+                                r.readAsDataURL(f);
+                            });
+                        }
+
                         try {
                             const res = await fetch('/api/mutabakat/public-respond', {
                                 method: 'POST',
@@ -5126,7 +5379,9 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     responderName: name,
                                     responderTitle: title,
                                     responseBalance: balance || null,
-                                    responseNote: note
+                                    responseNote: note,
+                                    disputeFile: disputeFileBase64,
+                                    disputeFileName: disputeFileName
                                 })
                             });
                             const data = await res.json();

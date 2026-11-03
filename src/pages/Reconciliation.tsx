@@ -3,7 +3,7 @@ import { db } from '../services/db';
 import { 
   FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
-  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet
+  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet, Archive, Paperclip
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
@@ -88,6 +88,9 @@ export const Reconciliation: React.FC = () => {
   // Toplu Gönderim State
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [showPendingModal, setShowPendingModal] = useState(false);
+  const [pendingFilter, setPendingFilter] = useState<'ALL' | 'OVERDUE'>('ALL');
+  const [isRemindingBulk, setIsRemindingBulk] = useState(false);
+  const [isExportingZip, setIsExportingZip] = useState(false);
   const [isSendingBatch, setIsSendingBatch] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; firmName?: string; channel?: string } | null>(null);
 
@@ -382,6 +385,50 @@ export const Reconciliation: React.FC = () => {
     );
   });
 
+  const filteredPending = pendingItems.filter(item => {
+    if (pendingFilter === 'OVERDUE') {
+      const days = item.sent_at ? Math.floor((Date.now() - new Date(item.sent_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+      return days >= 3;
+    }
+    return true;
+  });
+
+  const overduePendingCount = pendingItems.filter(item => {
+    const days = item.sent_at ? Math.floor((Date.now() - new Date(item.sent_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+    return days >= 3;
+  }).length;
+
+  const handleBulkRemind = async (minDays = 0) => {
+    if (isRemindingBulk) return;
+    const confirmMsg = minDays > 0 
+      ? `3 günden uzun süredir yanıt vermeyen tüm firmalara (${overduePendingCount} firma) tekrar mutabakat mektubu ve hatırlatma iletilecektir. Devam edilsin mi?`
+      : `Onay bekleyen tüm firmalara (${pendingItems.length} firma) tekrar mutabakat hatırlatması iletilecektir. Devam edilsin mi?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setIsRemindingBulk(true);
+      const res = await db.remindPendingReconciliations(undefined, minDays);
+      setSuccessMsg(res.message || 'Hatırlatma gönderim kuyruğu başlatıldı.');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Hatırlatma başlatılamadı.');
+    } finally {
+      setIsRemindingBulk(false);
+    }
+  };
+
+  const handleExportZip = async (period?: string) => {
+    if (isExportingZip) return;
+    try {
+      setIsExportingZip(true);
+      await db.downloadReconciliationZip(period, 'APPROVED');
+      setSuccessMsg('Onaylı mutabakat PDF arşivi (ZIP) başarıyla indirildi.');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'ZIP arşivi indirilemedi: ' + err.message);
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
+
   const handleExportApprovedToExcel = () => {
     if (filteredApproved.length === 0) return;
     const exportData = filteredApproved.map((item, idx) => {
@@ -571,6 +618,17 @@ export const Reconciliation: React.FC = () => {
           >
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
             <span>Mutabıklar Listesi ({approvedItems.filter(i => i.is_latest).length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleExportZip(selectedCutoffDate)}
+            disabled={stats.approved === 0 || isExportingZip}
+            className="px-3 py-1 rounded-lg bg-sky-700/80 hover:bg-sky-600 text-sky-100 border border-sky-500/30 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-40"
+            title="Bu dönemin onaylanan resmi mutabakat PDF mektuplarını tek bir ZIP olarak indir"
+          >
+            {isExportingZip ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5 text-sky-300" />}
+            <span>Onaylı ZIP İndir</span>
           </button>
 
           <button
@@ -936,6 +994,7 @@ export const Reconciliation: React.FC = () => {
                               title="Müşteri itiraz notunu incelemek için tıklayın"
                             >
                               <AlertTriangle className="w-3 h-3" /> Fark Bildirildi
+                              {item.dispute_file_name && <Paperclip className="w-2.5 h-2.5 text-sky-400 ml-0.5 inline" title="Müşteri ekstre yükledi" />}
                             </button>
                             {item.responder_name && (
                               <div className="text-[9.5px] text-rose-300/80 mt-0.5 truncate max-w-[140px]" title={`${item.responder_name} (${item.responder_title || 'Yetkili'})`}>
@@ -1344,6 +1403,24 @@ export const Reconciliation: React.FC = () => {
                 </div>
               </div>
 
+              {selectedDisputeItem.dispute_file_name && (
+                <div>
+                  <span className="text-slate-400 font-semibold">Karşı Firma Ekstresi / Belgesi:</span>
+                  <div className="mt-1">
+                    <a
+                      href={`/api/mutabakat/dispute-file/${selectedDisputeItem.token}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 text-xs font-semibold transition-colors w-full"
+                    >
+                      <Paperclip className="w-4 h-4 text-sky-400 shrink-0" />
+                      <span className="truncate flex-1 font-mono text-[11px]">{selectedDisputeItem.dispute_file_name}</span>
+                      <Download className="w-3.5 h-3.5 text-sky-400 shrink-0 ml-1" />
+                    </a>
+                  </div>
+                </div>
+              )}
+
               <div className="text-[10px] text-slate-500 flex justify-between pt-2 border-t border-slate-800">
                 <span>Yanıt Tarihi: {selectedDisputeItem.response_at ? new Date(selectedDisputeItem.response_at).toLocaleString('tr-TR') : '-'}</span>
                 <span>IP: {selectedDisputeItem.client_ip || '-'}</span>
@@ -1455,7 +1532,7 @@ export const Reconciliation: React.FC = () => {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[88vh] flex flex-col overflow-hidden">
             {/* Modal Header */}
-            <div className="flex items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70 gap-3">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
                   <Clock className="w-4 h-4 animate-pulse" />
@@ -1472,18 +1549,52 @@ export const Reconciliation: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowPendingModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Filter Tabs */}
+                <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setPendingFilter('ALL')}
+                    className={`px-2.5 py-1 rounded-md transition-all font-semibold ${pendingFilter === 'ALL' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Tümü ({pendingItems.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingFilter('OVERDUE')}
+                    className={`px-2.5 py-1 rounded-md transition-all font-semibold flex items-center gap-1 ${pendingFilter === 'OVERDUE' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <span>⏳ 3+ Gün Bekleyenler</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500/30 text-rose-200 text-[9.5px] font-bold">{overduePendingCount}</span>
+                  </button>
+                </div>
+
+                {/* Bulk Remind Button */}
+                <button
+                  type="button"
+                  onClick={() => handleBulkRemind(pendingFilter === 'OVERDUE' ? 3 : 0)}
+                  disabled={filteredPending.length === 0 || isRemindingBulk}
+                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-40 shadow-sm"
+                  title="Listelenen tüm firmalara otomatik hatırlatma gönder"
+                >
+                  {isRemindingBulk ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bell className="w-3.5 h-3.5" />}
+                  <span>{pendingFilter === 'OVERDUE' ? 'Gecikenlere Toplu Hatırlat' : 'Tümüne Hatırlat'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowPendingModal(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Modal Body: Table */}
             <div className="p-3 sm:p-4 overflow-y-auto flex-1">
-              {pendingItems.length === 0 ? (
+              {filteredPending.length === 0 ? (
                 <div className="text-center py-8 text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
                   <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-emerald-500/60" />
                   <span className="text-slate-300 font-medium text-sm">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
@@ -1503,8 +1614,10 @@ export const Reconciliation: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
-                      {pendingItems.map((pItem) => {
+                      {filteredPending.map((pItem) => {
                         const balanceNum = Number(pItem.balance) || 0;
+                        const sentTime = pItem.sent_at ? new Date(pItem.sent_at).getTime() : 0;
+                        const daysWaiting = sentTime ? Math.floor((Date.now() - sentTime) / (1000 * 60 * 60 * 24)) : 0;
                         return (
                           <tr key={pItem.id} className="hover:bg-slate-800/40 transition-colors">
                             <td className="py-2 px-3">
@@ -1533,8 +1646,25 @@ export const Reconciliation: React.FC = () => {
                                 {pItem.sent_channels === 'BOTH' ? '📱+✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
                               </span>
                             </td>
-                            <td className="py-2 px-3 text-center text-slate-400 text-[10.5px] whitespace-nowrap">
-                              {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                            <td className="py-2 px-3 text-center whitespace-nowrap">
+                              <div className="text-slate-300 text-[10.5px]">
+                                {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                              </div>
+                              <div className="mt-0.5">
+                                {daysWaiting >= 3 ? (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold text-[9.5px] border border-rose-500/30">
+                                    ⏳ {daysWaiting} gündür bekliyor
+                                  </span>
+                                ) : daysWaiting > 0 ? (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium text-[9.5px] border border-amber-500/30">
+                                    ⏳ {daysWaiting} gün oldu
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 font-medium text-[9.5px] border border-sky-500/20">
+                                    ✨ Bugün iletildi
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-2 px-3 text-right whitespace-nowrap">
                               <div className="flex items-center justify-end gap-1">
@@ -1660,6 +1790,17 @@ export const Reconciliation: React.FC = () => {
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>Excel İndir</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleExportZip()}
+                  disabled={filteredApproved.length === 0 || isExportingZip}
+                  className="px-3 py-1 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                  title="Onaylanan tüm resmi PDF mektuplarını tek bir ZIP dosyasında indir"
+                >
+                  {isExportingZip ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+                  <span>PDF'leri ZIP İndir</span>
                 </button>
               </div>
             </div>

@@ -13,6 +13,7 @@ node_modules/
 /db/*.json
 /db/backups/
 /db/whatsapp_auth/
+/db/reconciliation_files/
 !/db/users.example.json
 
 # Environment Variables & Secrets

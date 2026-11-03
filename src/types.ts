@@ -219,6 +219,8 @@ export interface ReconciliationItem {
   updated_at?: string;
   current_balance?: number;
   is_latest?: boolean;
+  dispute_file_path?: string;
+  dispute_file_name?: string;
 }
 
 export interface ReconciliationStats {
