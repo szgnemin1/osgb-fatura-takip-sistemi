@@ -193,6 +193,27 @@ export interface TelegramAllowedUser {
 
 // --- CARİ MUTABAKAT & ÇOKLU KANAL (WHATSAPP + E-POSTA) TİPLERİ ---
 export type ReconciliationStatus = 'PENDING_SEND' | 'SENT' | 'APPROVED' | 'DISPUTED';
+export type ReconciliationStage = 'INITIAL' | 'REMINDER_1' | 'REMINDER_2' | 'FINAL_NOTICE';
+
+export interface QuarterStageInfo {
+  stage: ReconciliationStage;
+  name: string;
+  targetDate: string;
+  targetDesc: string;
+  ruleDesc: string;
+  timeSlot: string;
+  adjustedDate: string;
+  weekendNote: string;
+}
+
+export interface QuarterScheduleInfo {
+  quarterKey: 'Q1' | 'Q2' | 'Q3' | 'Q4';
+  quarterName: string;
+  cutoffDate: string;
+  followupMonth: number;
+  followupMonthName: string;
+  stages: QuarterStageInfo[];
+}
 
 export interface ReconciliationItem {
   id: string;
@@ -221,6 +242,8 @@ export interface ReconciliationItem {
   is_latest?: boolean;
   dispute_file_path?: string;
   dispute_file_name?: string;
+  reminder_stage?: ReconciliationStage;
+  reminder_count?: number;
 }
 
 export interface ReconciliationStats {

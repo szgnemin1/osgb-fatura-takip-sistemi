@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { 
-  FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
+  CalendarDays, FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
   Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet, Archive, Paperclip
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
-import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
+import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo } from '../types';
 
 export const Reconciliation: React.FC = () => {
   const getInitialCutoffDate = () => {
@@ -16,6 +16,23 @@ export const Reconciliation: React.FC = () => {
   };
 
   const [selectedPeriod, setSelectedPeriod] = useState(getInitialCutoffDate);
+  const [quarterSchedules, setQuarterSchedules] = useState<QuarterScheduleInfo[]>([]);
+  const [selectedQuarterKey, setSelectedQuarterKey] = useState<'Q1' | 'Q2' | 'Q3' | 'Q4' | null>(null);
+  
+  // Şablon Önizleme Modalı
+  const [previewStage, setPreviewStage] = useState<ReconciliationStage | null>(null);
+  const [previewData, setPreviewData] = useState<{ emailSubject: string; whatsappCaption: string } | null>(null);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+
+  // İlk Gönderim Kuralı (7 Günlük e-Fatura / Ayın 8'i) Uyarı Modalı
+  const [earlySendWarning, setEarlySendWarning] = useState<{
+    isTooEarly: boolean;
+    warning: string;
+    recommendedDate: string;
+    action: 'single' | 'batch';
+    targetId?: string;
+    stage?: ReconciliationStage;
+  } | null>(null);
   const [items, setItems] = useState<ReconciliationItem[]>([]);
   const [pendingItems, setPendingItems] = useState<ReconciliationItem[]>([]);
   const [approvedItems, setApprovedItems] = useState<ReconciliationItem[]>([]);
@@ -186,6 +203,7 @@ export const Reconciliation: React.FC = () => {
     loadWhatsAppStatus();
     loadSmtpConfig();
     loadManagerSettings();
+    loadQuarterSchedules();
     loadData();
 
     // Periyodik kontrol: WhatsApp 5s, Mutabakat 7s
@@ -297,7 +315,7 @@ export const Reconciliation: React.FC = () => {
   };
 
   // Tekli Gönderim (Otomatik Kanal Seçimi: Maili olana mail, nosu olana no, ikisi olana ikisi)
-  const handleSendSingle = async (item: ReconciliationItem) => {
+  const handleSendSingle = async (item: ReconciliationItem, stage: ReconciliationStage = 'INITIAL', force = false) => {
     const hasPhone = Boolean(item.phone && item.phone.trim().length >= 10);
     const hasEmail = Boolean(item.email && item.email.includes('@'));
 
@@ -315,7 +333,18 @@ export const Reconciliation: React.FC = () => {
     setSendingSingleId(item.id);
     setErrorMsg('');
     try {
-      const res = await db.sendReconciliationSingle(item.id);
+      const res = await db.sendReconciliationSingle(item.id, stage, force);
+      if (res.isTooEarly && !force) {
+        setEarlySendWarning({
+          isTooEarly: true,
+          warning: res.warning || '',
+          recommendedDate: res.recommendedDate || '',
+          action: 'single',
+          targetId: item.id,
+          stage
+        });
+        return;
+      }
       setSuccessMsg(res.message || `"${item.firm_name}" firmasına mutabakat mektubu başarıyla iletildi.`);
       await loadData();
     } catch (err: any) {
@@ -398,7 +427,7 @@ export const Reconciliation: React.FC = () => {
     return days >= 3;
   }).length;
 
-  const handleBulkRemind = async (minDays = 0) => {
+  const handleBulkRemind = async (stage: ReconciliationStage = 'REMINDER_1', minDays = 0) => {
     if (isRemindingBulk) return;
     const confirmMsg = minDays > 0 
       ? `3 günden uzun süredir yanıt vermeyen tüm firmalara (${overduePendingCount} firma) tekrar mutabakat mektubu ve hatırlatma iletilecektir. Devam edilsin mi?`
@@ -407,7 +436,7 @@ export const Reconciliation: React.FC = () => {
 
     try {
       setIsRemindingBulk(true);
-      const res = await db.remindPendingReconciliations(undefined, minDays);
+      const res = await db.remindPendingReconciliations(undefined, minDays, stage);
       setSuccessMsg(res.message || 'Hatırlatma gönderim kuyruğu başlatıldı.');
     } catch (err: any) {
       setErrorMsg(err.message || 'Hatırlatma başlatılamadı.');
@@ -426,6 +455,73 @@ export const Reconciliation: React.FC = () => {
       setErrorMsg(err.message || 'ZIP arşivi indirilemedi: ' + err.message);
     } finally {
       setIsExportingZip(false);
+    }
+  };
+
+  const loadQuarterSchedules = async () => {
+    try {
+      const year = new Date(selectedPeriod || new Date()).getFullYear();
+      const res = await db.getReconciliationSchedules(year);
+      setQuarterSchedules(res.schedules || []);
+      // Otomatik çeyrek eşleştir
+      detectActiveQuarter(selectedPeriod, res.schedules || []);
+    } catch (_) {}
+  };
+
+  const detectActiveQuarter = (period: string, schedules: QuarterScheduleInfo[]) => {
+    if (!period) return;
+    const match = schedules.find(s => s.cutoffDate === period);
+    if (match) setSelectedQuarterKey(match.quarterKey);
+    else {
+      // Month based fallback
+      const m = parseInt(period.split('-')[1], 10);
+      if (m === 3) setSelectedQuarterKey('Q1');
+      else if (m === 6) setSelectedQuarterKey('Q2');
+      else if (m === 9) setSelectedQuarterKey('Q3');
+      else if (m === 12) setSelectedQuarterKey('Q4');
+      else setSelectedQuarterKey(null);
+    }
+  };
+
+  const handleSelectQuarter = (qKey: 'Q1' | 'Q2' | 'Q3' | 'Q4') => {
+    setSelectedQuarterKey(qKey);
+    const targetSched = quarterSchedules.find(s => s.quarterKey === qKey);
+    if (targetSched) {
+      setSelectedPeriod(targetSched.cutoffDate);
+    } else {
+      const year = new Date().getFullYear();
+      if (qKey === 'Q1') setSelectedPeriod(`${year}-03-31`);
+      else if (qKey === 'Q2') setSelectedPeriod(`${year}-06-30`);
+      else if (qKey === 'Q3') setSelectedPeriod(`${year}-09-30`);
+      else if (qKey === 'Q4') setSelectedPeriod(`${year}-12-31`);
+    }
+  };
+
+  const openPreviewModal = async (stage: ReconciliationStage) => {
+    try {
+      setIsLoadingPreview(true);
+      setPreviewStage(stage);
+      const data = await db.getTemplatePreview(stage, selectedPeriod);
+      setPreviewData(data);
+    } catch (e: any) {
+      setErrorMsg('Şablon önizleme yüklenemedi: ' + e.message);
+    } finally {
+      setIsLoadingPreview(false);
+    }
+  };
+
+  const handleConfirmEarlySend = async () => {
+    if (!earlySendWarning) return;
+    const { action, targetId, stage } = earlySendWarning;
+    setEarlySendWarning(null);
+
+    if (action === 'single' && targetId) {
+      const targetItem = items.find(i => i.id === targetId) || pendingItems.find(i => i.id === targetId);
+      if (targetItem) {
+        await handleSendSingle(targetItem, stage || 'INITIAL', true);
+      }
+    } else if (action === 'batch') {
+      await handleSendBatch(stage || 'INITIAL', true);
     }
   };
 
@@ -650,6 +746,164 @@ export const Reconciliation: React.FC = () => {
             )}
           </button>
         </div>
+      </div>
+
+      
+      {/* 4 ÇEYREK DÖNEM MUTABAKAT TAKVİMİ VE 4 AŞAMALI YASAL TAKİP ÇUBUĞU */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 shadow-md space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800/80">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+              <CalendarDays className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                <span>Çeyrek Dönem Mutabakat Takvimi</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-semibold border border-emerald-500/30">
+                  4 Aşamalı Takip Süreci (TTK m. 94)
+                </span>
+              </h3>
+              <p className="text-[10.5px] text-slate-400">
+                Geriye dönük 7 günlük e-fatura/arşiv payı gözetilerek ayın 8'inde başlar ve 4 aşamada tamamlanır.
+              </p>
+            </div>
+          </div>
+
+          {/* 4 Çeyrek Hızlı Seçim Butonları */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+            {[
+              { key: 'Q1', label: '1. Çeyrek', date: '31 Mart', followup: 'Nisan' },
+              { key: 'Q2', label: '2. Çeyrek', date: '30 Haziran', followup: 'Temmuz' },
+              { key: 'Q3', label: '3. Çeyrek', date: '30 Eylül', followup: 'Ekim' },
+              { key: 'Q4', label: '4. Çeyrek', date: '31 Aralık', followup: 'Ocak (Yıl Sonu)' },
+            ].map(q => {
+              const isSelected = selectedQuarterKey === q.key;
+              return (
+                <button
+                  key={q.key}
+                  type="button"
+                  onClick={() => handleSelectQuarter(q.key as any)}
+                  className={`px-2.5 py-1.5 rounded-lg text-left transition-all ${
+                    isSelected
+                      ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-900/30'
+                      : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                  }`}
+                >
+                  <div className="text-[11px] leading-tight font-bold">{q.label}</div>
+                  <div className={`text-[9.5px] leading-tight mt-0.5 ${isSelected ? 'text-emerald-100' : 'text-slate-400'}`}>
+                    {q.date} • {q.followup}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Seçili Çeyreğin 4 Aşamalı Yol Haritası (Timeline) */}
+        {(() => {
+          const activeSchedule = quarterSchedules.find(s => s.quarterKey === selectedQuarterKey) || quarterSchedules[2];
+          if (!activeSchedule) return null;
+
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 pt-1">
+              {activeSchedule.stages.map((st, idx) => {
+                const stageColors = {
+                  'INITIAL': {
+                    border: 'border-sky-500/30',
+                    bg: 'bg-sky-500/5',
+                    badge: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
+                    btn: 'bg-sky-600 hover:bg-sky-500 text-white',
+                    icon: '📤'
+                  },
+                  'REMINDER_1': {
+                    border: 'border-amber-500/30',
+                    bg: 'bg-amber-500/5',
+                    badge: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                    btn: 'bg-amber-600 hover:bg-amber-500 text-white',
+                    icon: '🔔'
+                  },
+                  'REMINDER_2': {
+                    border: 'border-orange-500/30',
+                    bg: 'bg-orange-500/5',
+                    badge: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+                    btn: 'bg-orange-600 hover:bg-orange-500 text-white',
+                    icon: '⚠️'
+                  },
+                  'FINAL_NOTICE': {
+                    border: 'border-rose-500/30',
+                    bg: 'bg-rose-500/5',
+                    badge: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
+                    btn: 'bg-rose-600 hover:bg-rose-500 text-white',
+                    icon: '🚨'
+                  }
+                }[st.stage];
+
+                return (
+                  <div
+                    key={st.stage}
+                    className={`p-2.5 rounded-xl border ${stageColors.border} ${stageColors.bg} flex flex-col justify-between space-y-2 relative group`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                          Aşama {idx + 1}
+                        </span>
+                        <span className={`text-[9.5px] px-1.5 py-0.2 rounded font-semibold border ${stageColors.badge}`}>
+                          {st.targetDesc}
+                        </span>
+                      </div>
+
+                      <div className="text-xs font-bold text-white mt-1 flex items-center gap-1.5">
+                        <span>{stageColors.icon}</span>
+                        <span>{st.name}</span>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+                        {st.ruleDesc}
+                      </p>
+
+                      {st.weekendNote && st.weekendNote.includes('Cumartesi') && (
+                        <div className="mt-1.5 text-[9.5px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                          📌 {st.weekendNote}
+                        </div>
+                      )}
+                      {st.weekendNote && st.weekendNote.includes('Pazar') && (
+                        <div className="mt-1.5 text-[9.5px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                          ⏰ {st.weekendNote}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800/60 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (st.stage === 'INITIAL') {
+                            setShowBatchModal(true);
+                          } else {
+                            handleBulkRemind(st.stage);
+                          }
+                        }}
+                        className={`flex-1 py-1 px-2 rounded-lg text-[10.5px] font-bold flex items-center justify-center gap-1 transition-colors ${stageColors.btn}`}
+                      >
+                        <span>{st.stage === 'INITIAL' ? 'İlk Gönder' : 'Bu Aşamayı Hatırlat'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => openPreviewModal(st.stage)}
+                        className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] border border-slate-700 transition-colors"
+                        title="Bu aşamanın resmi WhatsApp ve E-Posta şablonunu gör"
+                      >
+                        👁️
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
 
       {/* 3. KPI İSTATİSTİK KARTLARI (TIKLANABİLİR FİLTRE & BEKLEYENLER MODALI) */}
@@ -1952,6 +2206,162 @@ export const Reconciliation: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* İLK GÖNDERİM KURALI (7 GÜNLÜK PAY) UYARI MODALI */}
+      {earlySendWarning && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-amber-500/50 rounded-2xl shadow-2xl max-w-md w-full p-5 space-y-4 text-left">
+            <div className="flex items-center gap-3 text-amber-400 font-bold text-base pb-3 border-b border-slate-800">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-white font-bold text-sm">İlk Gönderim Kuralı Uyarısı</h4>
+                <p className="text-[10.5px] text-amber-400/90 font-normal mt-0.5">e-Fatura / e-Arşiv Yasal 7 Günlük Süre</p>
+              </div>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-300 leading-relaxed">
+              <div className="bg-amber-500/10 border border-amber-500/25 p-3 rounded-xl text-amber-200 text-xs">
+                {earlySendWarning.warning}
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Geriye dönük 7 günlük fatura kesim hakkı ve evrakların muhasebeye ulaşması nedeniyle dönem biter bitmez gönderilen mutabakatlarda sıkça fark çıkmaktadır.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setEarlySendWarning(null)}
+                className="w-full sm:w-auto px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                İptal Et
+              </button>
+              {earlySendWarning.recommendedDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedPeriod(earlySendWarning.recommendedDate);
+                    setEarlySendWarning(null);
+                    setSuccessMsg(`Kesim tarihi tavsiye edilen ${earlySendWarning.recommendedDate} tarihine ayarlandı.`);
+                  }}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md flex items-center justify-center gap-1.5"
+                >
+                  <span>🗓️ ${earlySendWarning.recommendedDate} Olarak Planla</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleConfirmEarlySend}
+                className="w-full sm:w-auto px-3.5 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-bold"
+                title="Kuralı atlayarak derhal gönderimi başlat"
+              >
+                <span>Yine de Şimdi Gönder</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ŞABLON ÖNİZLEME MODALI */}
+      {previewStage && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden text-left">
+            <div className="flex items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                  <Mail className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    {previewStage === 'INITIAL' && '1. Aşama: İlk Gönderim Şablonu'}
+                    {previewStage === 'REMINDER_1' && '2. Aşama: 1. Hatırlatma Şablonu'}
+                    {previewStage === 'REMINDER_2' && '3. Aşama: 2. Hatırlatma (KDV Öncesi) Şablonu'}
+                    {previewStage === 'FINAL_NOTICE' && '4. Aşama: Son Yasal Uyarı (TTK m. 94) Şablonu'}
+                  </h3>
+                  <p className="text-[10.5px] text-slate-400">
+                    Müşteriye hem WhatsApp hem de E-Posta kanalı üzerinden iletilen resmi metinler
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewStage(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto flex-1 text-xs">
+              {isLoadingPreview ? (
+                <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
+                  <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+                  <span>Şablon yükleniyor...</span>
+                </div>
+              ) : (
+                <>
+                  {/* WhatsApp Önizleme */}
+                  <div>
+                    <div className="flex items-center justify-between pb-1.5">
+                      <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span>📱 WhatsApp Mesaj Metni</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (previewData?.whatsappCaption) {
+                            navigator.clipboard.writeText(previewData.whatsappCaption);
+                            alert('WhatsApp mesaj metni kopyalandı.');
+                          }
+                        }}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] font-semibold flex items-center gap-1 border border-slate-700"
+                      >
+                        <Copy className="w-3 h-3" /> Metni Kopyala
+                      </button>
+                    </div>
+                    <pre className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-slate-200 font-sans text-xs whitespace-pre-wrap leading-relaxed">
+                      {previewData?.whatsappCaption}
+                    </pre>
+                  </div>
+
+                  {/* E-Posta Önizleme */}
+                  <div>
+                    <div className="flex items-center justify-between pb-1.5">
+                      <span className="font-bold text-sky-400 flex items-center gap-1.5">
+                        <span>✉️ E-Posta Konu & Başlık Vurgusu</span>
+                      </span>
+                    </div>
+                    <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2">
+                      <div>
+                        <span className="text-slate-500 text-[10.5px] block">Konu Satırı (Subject):</span>
+                        <div className="text-white font-mono font-semibold text-xs mt-0.5">
+                          {previewData?.emailSubject}
+                        </div>
+                      </div>
+                      <div className="pt-2 border-t border-slate-800 text-[11px] text-slate-400 leading-normal">
+                        📌 E-posta içerisinde HTML formatında bakiye kartı, onay/itiraz butonları, 6102 sayılı TTK m. 94 yasal bilgilendirmesi ve ekstre dökümü PDF eki yer almaktadır.
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="p-3 px-4 border-t border-slate-800 bg-slate-950/40 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPreviewStage(null)}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -525,6 +525,12 @@ async function createDatabaseBackup() {
         if (!recColNames.includes('dispute_file_name')) {
             await db.run("ALTER TABLE reconciliations ADD COLUMN dispute_file_name TEXT;");
         }
+        if (!recColNames.includes('reminder_stage')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN reminder_stage TEXT DEFAULT 'INITIAL';");
+        }
+        if (!recColNames.includes('reminder_count')) {
+            await db.run("ALTER TABLE reconciliations ADD COLUMN reminder_count INTEGER DEFAULT 0;");
+        }
     } catch (migErr) {
         console.error("Reconciliations migration hatası:", migErr);
     }
@@ -3501,7 +3507,240 @@ function getBaseUrl(req) {
     return `${protocol}://${host}`;
 }
 
-function buildReconciliationCaption(firm, rec, approvalUrl, isReminder = false) {
+
+// 4 Çeyrek Dönem Mutabakat Takvimi ve Hafta Sonu Dengeleme Motoru
+function getQuarterSchedules(year = new Date().getFullYear()) {
+    const quarters = [
+        {
+            quarterKey: 'Q1',
+            quarterName: '1. Çeyrek (31 Mart Kapanışı)',
+            cutoffDate: `${year}-03-31`,
+            followupMonth: 4,
+            followupMonthName: 'Nisan',
+            stages: [
+                {
+                    stage: 'INITIAL',
+                    name: 'İlk Gönderim',
+                    targetDate: `${year}-04-08`,
+                    targetDesc: '8 Nisan',
+                    ruleDesc: '7 günlük e-Fatura/e-Arşiv ve muhasebe payı sonrası ilk tebliğ',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_1',
+                    name: '1. Hatırlatma',
+                    targetDate: `${year}-04-17`,
+                    targetDesc: '17 Nisan',
+                    ruleDesc: 'İlk gönderimden ~9 gün sonra kurumsal nazik eşleştirme takibi',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_2',
+                    name: '2. Hatırlatma + Telefon',
+                    targetDate: `${year}-04-24`,
+                    targetDesc: '24 Nisan',
+                    ruleDesc: '23 Nisan tatili sonrası, KDV beyannamesi öncesi netleştirme',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'FINAL_NOTICE',
+                    name: 'Son Uyarı (TTK 94)',
+                    targetDate: `${year}-04-28`,
+                    targetDesc: '28 Nisan',
+                    ruleDesc: 'Ay bitimine 2 gün kala, 1 aylık yasal itiraz süresi dolum uyarısı',
+                    timeSlot: '09:30 - 10:00'
+                }
+            ]
+        },
+        {
+            quarterKey: 'Q2',
+            quarterName: '2. Çeyrek (30 Haziran Kapanışı)',
+            cutoffDate: `${year}-06-30`,
+            followupMonth: 7,
+            followupMonthName: 'Temmuz',
+            stages: [
+                {
+                    stage: 'INITIAL',
+                    name: 'İlk Gönderim',
+                    targetDate: `${year}-07-08`,
+                    targetDesc: '8 Temmuz',
+                    ruleDesc: '7 günlük e-Fatura/e-Arşiv ve muhasebe payı sonrası ilk tebliğ',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_1',
+                    name: '1. Hatırlatma',
+                    targetDate: `${year}-07-17`,
+                    targetDesc: '17 Temmuz',
+                    ruleDesc: '15 Temmuz Demokrasi Bayramı sonrası ilk iş günü takibi',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_2',
+                    name: '2. Hatırlatma + Telefon',
+                    targetDate: `${year}-07-24`,
+                    targetDesc: '24 Temmuz',
+                    ruleDesc: 'KDV beyannamesi öncesi muavin defter/ekstre çağrısı',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'FINAL_NOTICE',
+                    name: 'Son Uyarı (TTK 94)',
+                    targetDate: `${year}-07-29`,
+                    targetDesc: '29 Temmuz',
+                    ruleDesc: 'Ay bitimine 2 gün kala, 1 aylık yasal kesinleşme uyarısı',
+                    timeSlot: '09:30 - 10:00'
+                }
+            ]
+        },
+        {
+            quarterKey: 'Q3',
+            quarterName: '3. Çeyrek (30 Eylül Kapanışı)',
+            cutoffDate: `${year}-09-30`,
+            followupMonth: 10,
+            followupMonthName: 'Ekim',
+            stages: [
+                {
+                    stage: 'INITIAL',
+                    name: 'İlk Gönderim',
+                    targetDate: `${year}-10-08`,
+                    targetDesc: '8 Ekim',
+                    ruleDesc: '7 günlük e-Fatura/e-Arşiv ve muhasebe payı sonrası ilk tebliğ',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_1',
+                    name: '1. Hatırlatma',
+                    targetDate: `${year}-10-17`,
+                    targetDesc: '17 Ekim',
+                    ruleDesc: 'İlk gönderimden ~9 gün sonra kurumsal eşleştirme takibi',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_2',
+                    name: '2. Hatırlatma + Telefon',
+                    targetDate: `${year}-10-24`,
+                    targetDesc: '24 Ekim',
+                    ruleDesc: '28-29 Ekim Cumhuriyet Bayramı tatilinden önce tamamlanmalı',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'FINAL_NOTICE',
+                    name: 'Son Uyarı (TTK 94)',
+                    targetDate: `${year}-10-30`,
+                    targetDesc: '30 Ekim',
+                    ruleDesc: 'Ay bitimine 2 gün kala, 1 aylık yasal itiraz süresi sonu',
+                    timeSlot: '09:30 - 10:00'
+                }
+            ]
+        },
+        {
+            quarterKey: 'Q4',
+            quarterName: '4. Çeyrek (31 Aralık Yıl Sonu Kapanışı)',
+            cutoffDate: `${year}-12-31`,
+            followupMonth: 1,
+            followupMonthName: 'Ocak',
+            stages: [
+                {
+                    stage: 'INITIAL',
+                    name: 'İlk Gönderim',
+                    targetDate: `${year + 1}-01-10`,
+                    targetDesc: '10 Ocak',
+                    ruleDesc: 'Yıl sonu yoğunluğu nedeniyle 2 gün esnek ilk gönderim',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_1',
+                    name: '1. Hatırlatma',
+                    targetDate: `${year + 1}-01-19`,
+                    targetDesc: '19 Ocak',
+                    ruleDesc: 'Yıl sonu mutabakatı 1. takip',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'REMINDER_2',
+                    name: '2. Hatırlatma + Telefon',
+                    targetDate: `${year + 1}-01-25`,
+                    targetDesc: '25 Ocak',
+                    ruleDesc: 'KDV beyanı ve yıllık hesap kapatma öncesi telefonlu takip',
+                    timeSlot: '09:30 - 10:00'
+                },
+                {
+                    stage: 'FINAL_NOTICE',
+                    name: 'Son Uyarı (TTK 94)',
+                    targetDate: `${year + 1}-01-29`,
+                    targetDesc: '29 Ocak',
+                    ruleDesc: 'Yıl sonu hesaplarının kesinleşmesi için son yasal uyarı',
+                    timeSlot: '09:30 - 10:00'
+                }
+            ]
+        }
+    ];
+
+    // Hafta Sonu Dengelemesi (Cumartesi -> Cuma, Pazar -> Pazartesi)
+    for (const q of quarters) {
+        for (const st of q.stages) {
+            const d = new Date(st.targetDate + 'T10:00:00');
+            const dayOfWeek = d.getDay();
+            if (dayOfWeek === 6) {
+                const adj = new Date(d);
+                adj.setDate(d.getDate() - 1);
+                st.adjustedDate = adj.toISOString().slice(0, 10);
+                st.weekendNote = 'Cumartesiye denk geldiği için Cuma gününe çekildi.';
+            } else if (dayOfWeek === 0) {
+                const adj = new Date(d);
+                adj.setDate(d.getDate() + 1);
+                st.adjustedDate = adj.toISOString().slice(0, 10);
+                st.weekendNote = 'Pazara denk geldiği için Pazartesi sabah 09:30-10:00 saatine planlandı.';
+            } else {
+                st.adjustedDate = st.targetDate;
+                st.weekendNote = 'Hafta içi iş günü (09:30 - 10:00)';
+            }
+        }
+    }
+    return quarters;
+}
+
+// 1. Kural Doğrulayıcı: İlk Gönderim Dönem Sonu Gününde Yapılamaz (7 Günlük e-Fatura Payı)
+function validateInitialSendDate(periodStr, sendDate = new Date()) {
+    try {
+        if (!periodStr) return { isTooEarly: false };
+        const parts = periodStr.split('-');
+        if (parts.length >= 2) {
+            const year = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10);
+            const day = parts[2] ? parseInt(parts[2], 10) : 30;
+
+            let recommendedSendDate = null;
+            if (month === 3) {
+                recommendedSendDate = new Date(year, 3, 8); // 8 Nisan
+            } else if (month === 6) {
+                recommendedSendDate = new Date(year, 6, 8); // 8 Temmuz
+            } else if (month === 9) {
+                recommendedSendDate = new Date(year, 9, 8); // 8 Ekim
+            } else if (month === 12) {
+                recommendedSendDate = new Date(year + 1, 0, 10); // 10 Ocak
+            } else {
+                const cDate = new Date(year, month - 1, day);
+                recommendedSendDate = new Date(cDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+            }
+
+            const sendDateOnly = new Date(sendDate.getFullYear(), sendDate.getMonth(), sendDate.getDate());
+            if (sendDateOnly < recommendedSendDate) {
+                const recStr = recommendedSendDate.toISOString().slice(0, 10);
+                const recDisplay = recommendedSendDate.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
+                return {
+                    isTooEarly: true,
+                    recommendedDate: recStr,
+                    warningMessage: `İlk Gönderim Kuralı: Geriye dönük 7 günlük e-Fatura/e-Arşiv kesim süresi ve evrakların muhasebeye işlenme payı nedeniyle, ilk mutabakat tebliğleri takip eden ayın 8'inden itibaren (${recDisplay}) yapılmalıdır.`
+                };
+            }
+        }
+    } catch (_) {}
+    return { isTooEarly: false, recommendedDate: null, warningMessage: null };
+}
+
+function buildReconciliationCaption(firm, rec, approvalUrl, stage = 'INITIAL') {
     const balanceNum = Number(rec.balance) || 0;
     let bakiyeStr = "0.00 TL (HESABIMIZ DENKTİR)";
     if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇLU`;
@@ -3509,23 +3748,68 @@ function buildReconciliationCaption(firm, rec, approvalUrl, isReminder = false) 
 
     const displayPeriod = formatPeriodDisplay(rec.period);
 
-    const reminderHeader = isReminder ? `🔔 *CARİ MUTABAKAT HATIRLATMASI*\n\n` : ``;
-    const reminderNote = isReminder ? `⚠️ *Hatırlatma:* Tarafınıza daha önce iletilen mutabakat mektubu için henüz onay/itiraz bildiriminiz alınamamıştır. Yasal kayıtlarımızla mutabakatınızı tamamlamak için lütfen kontrol ediniz.\n\n` : ``;
+    // Aşama 2: 1. Hatırlatma
+    if (stage === 'REMINDER_1') {
+        return (
+            `🔔 *CARİ MUTABAKAT 1. HATIRLATMASI*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Sayın Yetkili (*${firm.name}*),\n\n` +
+            `*${displayPeriod}* çeyrek dönem kapanışına istinaden tarafınıza iletilen resmi cari mutabakat mektubumuza henüz bir teyit veya bildirim kaydı ulaşmamıştır.\n\n` +
+            `👉 *Sistem Cari Bakiyeniz:* *${bakiyeStr}*\n\n` +
+            `Dönem muhasebe kayıtlarımızın kesinleştirilmesi ve karşılıklı cari hesap eşleştirmesi adına lütfen aşağıdaki güvenli bağlantıyı kullanarak mutabakatınızı teyit etmenizi rica ederiz:\n\n` +
+            `🌐 *Resmi Onay Bağlantısı:*\n` +
+            `${approvalUrl}\n\n` +
+            `İşbirliğiniz için teşekkür eder, iyi çalışmalar dileriz.\n` +
+            `*Finans & Muhasebe Yönetimi*`
+        );
+    }
 
+    // Aşama 3: 2. Hatırlatma + Telefon / KDV Beyannamesi Öncesi
+    if (stage === 'REMINDER_2') {
+        return (
+            `⚠️ *ÖNEMLİ: CARİ MUTABAKAT 2. HATIRLATMASI (KDV BEYAN ÖNCESİ)*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Sayın Yetkili (*${firm.name}*),\n\n` +
+            `Yaklaşan KDV beyannamesi ve yasal dönem kapanış kayıtları öncesinde *${displayPeriod}* tarihli cari hesap mutabakatımızın ivedilikle netleştirilmesi gerekmektedir.\n\n` +
+            `📊 *Kayıtlarımızdaki Cari Bakiye:* *${bakiyeStr}*\n\n` +
+            `Hesaplarımız arasında herhangi bir fark veya eksik fatura/ödeme bulunması halinde, lütfen aşağıdaki bağlantı üzerinden *muavin defter / cari ekstrenizi yükleyerek* fark bildiriminde bulununuz veya muhasebe departmanımız ile ivedilikle iletişime geçiniz:\n\n` +
+            `🌐 *Mutabakat & Ekstre Yükleme:*\n` +
+            `${approvalUrl}\n\n` +
+            `Saygılarımızla,\n` +
+            `*Finans & Muhasebe Yönetimi*`
+        );
+    }
+
+    // Aşama 4: Son Uyarı / TTK m. 94 Yasal Kesinleşme
+    if (stage === 'FINAL_NOTICE') {
+        return (
+            `🚨 *[SON HATIRLATMA] YASAL CARİ HESAP MUTABAKATI*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Sayın Yetkili (*${firm.name}*),\n\n` +
+            `6102 sayılı Türk Ticaret Kanunu'nun (TTK) 94. maddesi uyarınca, *${displayPeriod}* cari hesap mutabakatı için tanınan 1 aylık yasal itiraz süresi dolmak üzeredir.\n\n` +
+            `📊 *Yasal Kayıtlarımızdaki Kesin Bakiye:* *${bakiyeStr}*\n\n` +
+            `⚖️ *HUKUKİ BİLDİRİM (TTK MADDE 94):*\n` +
+            `Ay sonu mesai bitimine kadar sistemimiz üzerinden itiraz veya karşı ekstre iletilmemesi halinde, şirketimiz yasal muhasebe kayıtlarındaki bakiye kanunen kesinleşmiş ve mutabık kalınmış sayılacaktır.\n\n` +
+            `Yasal hak kaybına uğramamanız ve kayıtların kesinleşmesi adına lütfen aşağıdaki resmi bağlantı üzerinden işleminizi tamamlayınız:\n\n` +
+            `🌐 *Resmi Onay & İtiraz Bağlantısı:*\n` +
+            `${approvalUrl}\n\n` +
+            `*Finans & Hukuk / Muhasebe Yönetimi*`
+        );
+    }
+
+    // Varsayılan: Aşama 1 - İlk Gönderim (INITIAL)
     return (
-        reminderHeader +
         `Sayın Yetkili (*${firm.name}*),\n\n` +
-        reminderNote +
-        `6102 sayılı TTK m. 94 ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${displayPeriod}* tarihi itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
+        `6102 sayılı Türk Ticaret Kanunu'nun 94. maddesi ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${displayPeriod}* çeyrek dönem kapanışı itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
         `👉 *${bakiyeStr}* olarak tespit edilmiştir.\n\n` +
         `Resmi mutabakat mektubunuz ve ayrıntılı hesap dökümünüz ekteki PDF belgesinde yer almaktadır.\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
         `⚖️ *RESMİ CARİ HESAP MUTABAKATI*\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `Yasal muhasebe kayıtlarımızı inceleyerek mutabakatı onaylamak veya varsa itiraz/fark bildiriminizi iletmek için lütfen aşağıdaki güvenli bağlantıyı kullanınız:\n\n` +
+        `Dönem içi evrak, fatura ve ödeme kayıtlarımızın karşılıklı mutabakatı için lütfen hesap ekstreniz ile karşılaştırarak aşağıdaki güvenli bağlantı üzerinden onayınızı veya varsa fark bildiriminizi iletiniz:\n\n` +
         `🌐 *Resmi Onay Bağlantısı:*\n` +
         `${approvalUrl}\n\n` +
-        `📌 *Hukuki Bildirim (TTK m. 94):* Tebliğ tarihinden itibaren yasal süre (1 ay) içinde itiraz edilmeyen cari hesap bakiyeleri yasal olarak kesinleşmiş sayılır.\n\n` +
+        `📌 *Yasal Bilgilendirme (TTK m. 94):* Tebliğ tarihinden itibaren yasal 1 aylık süre içerisinde itiraz edilmeyen cari hesap bakiyeleri yasal olarak kesinleşmiş sayılır.\n\n` +
         `Saygılarımızla,\n*Finans & Muhasebe Yönetimi*`
     );
 }
@@ -3826,7 +4110,7 @@ function createMailTransporter(settings) {
     });
 }
 
-async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, isReminder = false) {
+async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, stage = 'INITIAL') {
     const smtp = await getSmtpSettings();
     if (!smtp || !smtp.host || !smtp.user) {
         throw new Error('E-posta (SMTP) sunucu ayarları yapılandırılmamış. Lütfen SMTP Ayarları menüsünden bilgilerinizi kaydedin.');
@@ -3891,9 +4175,17 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
             <!-- Gövde -->
             <tr>
                 <td style="padding: 32px 28px;">
-                    ${isReminder ? `
-                    <div style="background-color: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 12.5px; color: #92400e; font-weight: 600;">
-                        🔔 <strong>MUTABAKAT HATIRLATMASI:</strong> Bu mutabakat mektubu tarafınıza daha önce iletilmiş olup henüz yanıtınız alınamamıştır. Lütfen aşağıdaki bilgileri inceleyerek teyit ediniz.
+                    ${stage === 'REMINDER_1' ? `
+                    <div style="background-color: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: #92400e; line-height: 1.5;">
+                        🔔 <strong>1. MUTABAKAT HATIRLATMASI:</strong> ${escapeHtml(formatPeriodDisplay(rec.period))} çeyrek dönem kapanışına istinaden tarafınıza iletilen mutabakat mektubumuza henüz yanıtınız ulaşmamıştır. Kayıtlarımızın karşılıklı mutabakatı için lütfen kontrol ediniz.
+                    </div>
+                    ` : stage === 'REMINDER_2' ? `
+                    <div style="background-color: #ffedd5; border: 1px solid #f97316; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: #9a3412; line-height: 1.5;">
+                        ⚠️ <strong>ÖNEMLİ (KDV BEYAN ÖNCESİ):</strong> Yaklaşan KDV beyannamesi ve dönem kayıt kapanışları öncesinde cari mutabakatımızın netleştirilmesi gerekmektedir. Fark bulunması halinde ekstre/muavin defter yükleyerek dönüş yapabilirsiniz.
+                    </div>
+                    ` : stage === 'FINAL_NOTICE' ? `
+                    <div style="background-color: #ffe4e6; border: 2px solid #e11d48; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px; color: #9f1239; line-height: 1.5;">
+                        🚨 <strong>DİKKAT (SON UYARI - TTK m. 94):</strong> 6102 sayılı TTK 94. maddesi gereğince 1 aylık yasal itiraz süresi dolmak üzeredir. Ay sonu mesai bitimine kadar dönüş yapılmaması halinde yasal muhasebe kayıtlarımızdaki bakiye kanunen kesinleşmiş sayılacaktır.
                     </div>
                     ` : ''}
                     <p style="font-size: 15px; color: #1e293b; margin: 0 0 16px; font-weight: 700;">
@@ -3978,7 +4270,12 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
     const mailOptions = {
         from: fromAddress,
         to: targetEmail,
-        subject: `${isReminder ? '[HATIRLATMA] ' : ''}Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`.replace(/[\r\n\t]/g, ' '),
+        subject: (() => {
+        if (stage === 'REMINDER_1') return `[HATIRLATMA] Cari Hesap Mutabakat Formu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`;
+        if (stage === 'REMINDER_2') return `[2. HATIRLATMA / ÖNEMLİ] Cari Hesap Mutabakatı - ${formatPeriodDisplay(rec.period)} - ${firm.name}`;
+        if (stage === 'FINAL_NOTICE') return `[SON HATIRLATMA] Yasal Cari Hesap Mutabakatı - ${formatPeriodDisplay(rec.period)} - ${firm.name}`;
+        return `Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(rec.period)} - ${firm.name}`;
+    })().replace(/[\r\n\t]/g, ' '),
         html: htmlContent,
         attachments: [
             {
@@ -3993,7 +4290,7 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
 }
 
 // Birleşik Çoklu Kanal Gönderim Fonksiyonu (WhatsApp + E-Posta)
-async function dispatchReconciliationItem(rec, req, isReminder = false) {
+async function dispatchReconciliationItem(rec, req, stage = 'INITIAL') {
     const firm = await getFirmById(rec.firm_id);
     if (!firm) throw new Error('Firma kaydı bulunamadı.');
 
@@ -4023,7 +4320,7 @@ async function dispatchReconciliationItem(rec, req, isReminder = false) {
     if (hasPhone) {
         if (isWaConnected && waSocket) {
             try {
-                const caption = buildReconciliationCaption(firm, rec, approvalUrl, isReminder);
+                const caption = buildReconciliationCaption(firm, rec, approvalUrl, stage);
                 const jid = `${targetPhone}@s.whatsapp.net`;
                 await waSocket.sendMessage(jid, {
                     document: pdfBuffer,
@@ -4044,7 +4341,7 @@ async function dispatchReconciliationItem(rec, req, isReminder = false) {
     // 2. E-Posta Gönderimi (Eğer e-posta varsa)
     if (hasEmail) {
         try {
-            await sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, isReminder);
+            await sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filename, stage);
             sentChannelsList.push('EMAIL');
         } catch (mailErr) {
             console.error(`E-posta gönderim hatası (${targetEmail}):`, mailErr.message);
@@ -4064,12 +4361,20 @@ async function dispatchReconciliationItem(rec, req, isReminder = false) {
     }
 
     const now = new Date().toISOString();
+    const isReminder = stage !== 'INITIAL';
     await db.run(
-        "UPDATE reconciliations SET status = 'SENT', sent_at = COALESCE(sent_at, ?), sent_channels = ?, updated_at = ? WHERE id = ?",
-        [now, channelCode, now, rec.id]
+        `UPDATE reconciliations 
+         SET status = 'SENT', 
+             sent_at = COALESCE(sent_at, ?), 
+             sent_channels = ?, 
+             reminder_stage = ?,
+             reminder_count = COALESCE(reminder_count, 0) + ?,
+             updated_at = ? 
+         WHERE id = ?`,
+        [now, channelCode, stage, isReminder ? 1 : 0, now, rec.id]
     );
 
-    await logAuditEvent(req, isReminder ? 'RECONCILIATION_REMINDED' : 'RECONCILIATION_SENT', {
+    await logAuditEvent(req, isReminder ? `RECONCILIATION_${stage}` : 'RECONCILIATION_SENT', {
         firmId: rec.firm_id,
         channels: sentChannelsList,
         phone: hasPhone ? targetPhone : null,
@@ -4326,6 +4631,8 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
                 responder_title: r.responder_title || '',
                 dispute_file_path: r.dispute_file_path || null,
                 dispute_file_name: r.dispute_file_name || null,
+                reminder_stage: r.reminder_stage || 'INITIAL',
+                reminder_count: Number(r.reminder_count) || 0,
                 client_ip: r.client_ip,
                 created_at: r.created_at,
                 updated_at: r.updated_at
@@ -4615,11 +4922,23 @@ app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, as
 // Tekli Çoklu Kanal Gönderimi (WhatsApp / E-Posta / İkisi Birden)
 app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const { reconciliationId } = req.body;
+        const { reconciliationId, stage = 'INITIAL', force = false } = req.body;
         const rec = await db.get("SELECT * FROM reconciliations WHERE id = ?", [reconciliationId]);
         if (!rec) return res.status(404).json({ error: 'Mutabakat kaydı bulunamadı.' });
 
-        const result = await dispatchReconciliationItem(rec, req);
+        if (stage === 'INITIAL' && !force) {
+            const check = validateInitialSendDate(rec.period);
+            if (check.isTooEarly) {
+                return res.status(400).json({
+                    isTooEarly: true,
+                    error: check.warningMessage,
+                    recommendedDate: check.recommendedDate,
+                    canForce: true
+                });
+            }
+        }
+
+        const result = await dispatchReconciliationItem(rec, req, stage);
 
         let msg = 'Mutabakat mektubu başarıyla iletildi.';
         if (result.sentChannels === 'BOTH') {
@@ -4644,7 +4963,20 @@ app.post('/api/reconciliation/send-single', authenticateToken, requireAdmin, asy
 // Toplu Çoklu Kanal Gönderimi (WhatsApp + E-Posta)
 app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        const { period, firmIds } = req.body;
+        const { period, firmIds, stage = 'INITIAL', force = false } = req.body;
+
+        if (stage === 'INITIAL' && !force) {
+            const check = validateInitialSendDate(period);
+            if (check.isTooEarly) {
+                return res.status(400).json({
+                    isTooEarly: true,
+                    error: check.warningMessage,
+                    recommendedDate: check.recommendedDate,
+                    canForce: true
+                });
+            }
+        }
+
         let query = "SELECT * FROM reconciliations WHERE period = ?";
         let params = [period];
 
@@ -4680,7 +5012,7 @@ app.post('/api/reconciliation/send-batch', authenticateToken, requireAdmin, asyn
                     const firm = await getFirmById(rec.firm_id);
                     if (!firm) continue;
 
-                    const result = await dispatchReconciliationItem(rec, req);
+                    const result = await dispatchReconciliationItem(rec, req, stage);
                     sentCount++;
 
                     io.emit('reconciliation_progress', {
@@ -4907,6 +5239,44 @@ app.get('/api/mutabakat/dispute-file/:token', async (req, res) => {
     }
 });
 
+
+// 4 Çeyrek Dönem Mutabakat Takvimini Getir
+app.get('/api/reconciliation/schedules', authenticateToken, (req, res) => {
+    try {
+        const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+        const schedules = getQuarterSchedules(year);
+        res.json({ year, schedules });
+    } catch (e) {
+        res.status(500).json({ error: 'Takvim hesaplanamadı: ' + e.message });
+    }
+});
+
+// Aşamalı Şablon Önizleme (WhatsApp & E-Posta)
+app.get('/api/reconciliation/template-preview', authenticateToken, (req, res) => {
+    try {
+        const { stage = 'INITIAL', period = '2026-09-30' } = req.query;
+        const mockFirm = { name: 'ÖRNEK SANAYİ VE TİCARET A.Ş.' };
+        const mockRec = { period, balance: 14500.00, token: 'ornek-mutabakat-anahtari' };
+        const sampleUrl = `${getBaseUrl(req)}/mutabakat/${mockRec.token}`;
+
+        const whatsappCaption = buildReconciliationCaption(mockFirm, mockRec, sampleUrl, stage);
+
+        let emailSubject = `Cari Hesap Mutabakat Mektubu - ${formatPeriodDisplay(period)} - ${mockFirm.name}`;
+        if (stage === 'REMINDER_1') emailSubject = `[HATIRLATMA] Cari Hesap Mutabakat Formu - ${formatPeriodDisplay(period)} - ${mockFirm.name}`;
+        else if (stage === 'REMINDER_2') emailSubject = `[2. HATIRLATMA / ÖNEMLİ] Cari Hesap Mutabakatı - ${formatPeriodDisplay(period)} - ${mockFirm.name}`;
+        else if (stage === 'FINAL_NOTICE') emailSubject = `[SON HATIRLATMA] Yasal Cari Hesap Mutabakatı - ${formatPeriodDisplay(period)} - ${mockFirm.name}`;
+
+        res.json({
+            stage,
+            period,
+            emailSubject,
+            whatsappCaption
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'Önizleme oluşturulamadı: ' + e.message });
+    }
+});
+
 // Toplu Onaylı Mutabakat PDF Arşivi (ZIP) İndir
 app.get('/api/reconciliation/export-zip', authenticateToken, async (req, res) => {
     try {
@@ -4985,7 +5355,7 @@ app.get('/api/reconciliation/export-zip', authenticateToken, async (req, res) =>
 app.post('/api/reconciliation/remind-pending', authenticateToken, requireAdmin, async (req, res) => {
     try {
         if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
-        const { reconciliationIds, minDays = 0 } = req.body;
+        const { reconciliationIds, minDays = 0, stage = 'REMINDER_1' } = req.body;
 
         let query = "SELECT * FROM reconciliations WHERE status = 'SENT'";
         const params = [];
@@ -5027,7 +5397,7 @@ app.post('/api/reconciliation/remind-pending', authenticateToken, requireAdmin, 
                     const firm = await getFirmById(rec.firm_id);
                     if (!firm) continue;
 
-                    const result = await dispatchReconciliationItem(rec, req, true);
+                    const result = await dispatchReconciliationItem(rec, req, stage);
                     sentCount++;
 
                     io.emit('reconciliation_progress', {

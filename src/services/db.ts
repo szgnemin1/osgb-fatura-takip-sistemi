@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -839,36 +839,60 @@ export const db = {
     return data;
   },
 
-  sendReconciliationBatch: async (period: string, firmIds?: string[]): Promise<{ success: boolean; total: number; message: string }> => {
+  sendReconciliationBatch: async (period: string, firmIds?: string[], stage: ReconciliationStage = 'INITIAL', force = false): Promise<{ success?: boolean; total?: number; message?: string; isTooEarly?: boolean; warning?: string; recommendedDate?: string; canForce?: boolean }> => {
     const res = await fetchWithAuth('/api/reconciliation/send-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ period, firmIds })
+      body: JSON.stringify({ period, firmIds, stage, force })
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Toplu gönderim başlatılamadı.');
+    if (!res.ok) {
+      if (data.isTooEarly) return data;
+      throw new Error(data.error || 'Toplu gönderim başlatılamadı.');
+    }
     return data;
   },
 
-  sendReconciliationSingle: async (reconciliationId: string): Promise<{ success: boolean; message: string }> => {
+  sendReconciliationSingle: async (reconciliationId: string, stage: ReconciliationStage = 'INITIAL', force = false): Promise<{ success?: boolean; message?: string; isTooEarly?: boolean; warning?: string; recommendedDate?: string; canForce?: boolean }> => {
     const res = await fetchWithAuth('/api/reconciliation/send-single', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reconciliationId })
+      body: JSON.stringify({ reconciliationId, stage, force })
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Mesaj gönderilemedi.');
+    if (!res.ok) {
+      if (data.isTooEarly) return data;
+      throw new Error(data.error || 'Mesaj gönderilemedi.');
+    }
     return data;
   },
 
-  remindPendingReconciliations: async (reconciliationIds?: string[], minDays?: number): Promise<{ success: boolean; totalEligible: number; message: string }> => {
+  remindPendingReconciliations: async (reconciliationIds?: string[], minDays?: number, stage: ReconciliationStage = 'REMINDER_1'): Promise<{ success: boolean; totalEligible: number; message: string }> => {
     const res = await fetchWithAuth('/api/reconciliation/remind-pending', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reconciliationIds, minDays })
+      body: JSON.stringify({ reconciliationIds, minDays, stage })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Hatırlatma gönderilemedi.');
+    return data;
+  },
+
+  getReconciliationSchedules: async (year?: number): Promise<{ year: number; schedules: QuarterScheduleInfo[] }> => {
+    const url = year ? `/api/reconciliation/schedules?year=${year}` : '/api/reconciliation/schedules';
+    const res = await fetchWithAuth(url);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Takvim alınamadı.');
+    return data;
+  },
+
+  getTemplatePreview: async (stage: ReconciliationStage, period?: string): Promise<{ stage: string; period: string; emailSubject: string; whatsappCaption: string }> => {
+    const params = new URLSearchParams();
+    params.append('stage', stage);
+    if (period) params.append('period', period);
+    const res = await fetchWithAuth(`/api/reconciliation/template-preview?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Şablon önizleme alınamadı.');
     return data;
   },
 
