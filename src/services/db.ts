@@ -919,5 +919,34 @@ export const db = {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Durum sıfırlanamadı.');
     return data;
+  },
+
+  getReconciliationSettings: async (): Promise<{ managerPhone: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/settings');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ayarlar alınamadı.');
+    return data;
+  },
+
+  saveReconciliationSettings: async (managerPhone: string): Promise<{ success: boolean; managerPhone: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ managerPhone })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Ayarlar kaydedilemedi.');
+    return data;
+  },
+
+  testManagerNotification: async (managerPhone?: string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/test-manager-notification', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ managerPhone })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Test bildirimi gönderilemedi.');
+    return data;
   }
 };

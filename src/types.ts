@@ -136,6 +136,8 @@ export interface GlobalSettings {
     quoteIntroTemplate?: string;
     quoteFooterTemplate?: string; // YENİ: Sadeleştirilmiş Borç Modu
     firmGroups?: string[]; // Dinamik Firma Grupları (Grup 1, Grup 2 vb.)
+    reconciliationManagerPhone?: string; // Mutabakat yanıtlarının iletileceği yönetici WhatsApp numarası
+    managerPhone?: string;
 }
 
 export interface LogEntry {

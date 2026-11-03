@@ -3,7 +3,7 @@ import { db } from '../services/db';
 import { 
   FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
-  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar
+  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
@@ -63,6 +63,15 @@ export const Reconciliation: React.FC = () => {
   const [testEmailTarget, setTestEmailTarget] = useState('');
   const [isSendingTestMail, setIsSendingTestMail] = useState(false);
 
+  // Yönetici Bildirim Numarası State
+  const [managerPhone, setManagerPhone] = useState('');
+  const [showManagerModal, setShowManagerModal] = useState(false);
+  const [tempManagerPhone, setTempManagerPhone] = useState('');
+  const [isSavingManagerPhone, setIsSavingManagerPhone] = useState(false);
+  const [isTestingManagerPhone, setIsTestingManagerPhone] = useState(false);
+  const [managerModalSuccess, setManagerModalSuccess] = useState('');
+  const [managerModalError, setManagerModalError] = useState('');
+
   // İletişim Bilgisi Düzenleme (Telefon & E-Posta)
   const [editingContactFirmId, setEditingContactFirmId] = useState<string | null>(null);
   const [editedPhone, setEditedPhone] = useState('');
@@ -98,6 +107,44 @@ export const Reconciliation: React.FC = () => {
     } catch (_) {}
   };
 
+  const loadManagerSettings = async () => {
+    try {
+      const res = await db.getReconciliationSettings();
+      setManagerPhone(res.managerPhone || '');
+    } catch (_) {}
+  };
+
+  const handleSaveManagerPhone = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingManagerPhone(true);
+    setManagerModalError('');
+    setManagerModalSuccess('');
+    try {
+      const res = await db.saveReconciliationSettings(tempManagerPhone);
+      setManagerPhone(res.managerPhone);
+      setManagerModalSuccess('Yönetici bildirim numarası başarıyla kaydedildi.');
+      setTimeout(() => setShowManagerModal(false), 1500);
+    } catch (err: any) {
+      setManagerModalError(err.message || 'Numara kaydedilemedi.');
+    } finally {
+      setIsSavingManagerPhone(false);
+    }
+  };
+
+  const handleTestManagerPhone = async () => {
+    setIsTestingManagerPhone(true);
+    setManagerModalError('');
+    setManagerModalSuccess('');
+    try {
+      const res = await db.testManagerNotification(tempManagerPhone);
+      setManagerModalSuccess(res.message || 'Test bildirimi WhatsApp üzerinden başarıyla iletildi.');
+    } catch (err: any) {
+      setManagerModalError(err.message || 'Test bildirimi gönderilemedi.');
+    } finally {
+      setIsTestingManagerPhone(false);
+    }
+  };
+
   const loadData = async () => {
     setIsLoading(true);
     setErrorMsg('');
@@ -128,6 +175,7 @@ export const Reconciliation: React.FC = () => {
   useEffect(() => {
     loadWhatsAppStatus();
     loadSmtpConfig();
+    loadManagerSettings();
     loadData();
 
     // Periyodik kontrol: WhatsApp 5s, Mutabakat 7s
@@ -382,6 +430,33 @@ export const Reconciliation: React.FC = () => {
               >
                 <Settings className="w-3 h-3" />
                 <span>SMTP Ayarları</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Yönetici WhatsApp Bildirim Rozeti */}
+          <div className="flex items-center gap-2.5 p-2 px-3 rounded-2xl bg-slate-900 border border-slate-800 shadow-md">
+            <div className={`w-2.5 h-2.5 rounded-full ${managerPhone ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+            <div>
+              <div className="text-xs font-bold text-slate-200 flex items-center gap-1">
+                <Bell className="w-3.5 h-3.5 text-amber-400" />
+                <span>{managerPhone ? `Yönetici: ${managerPhone}` : 'Yönetici No Yok'}</span>
+              </div>
+            </div>
+            <div className="pl-2 border-l border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setTempManagerPhone(managerPhone);
+                  setManagerModalError('');
+                  setManagerModalSuccess('');
+                  setShowManagerModal(true);
+                }}
+                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-[11px] font-bold flex items-center gap-1 transition-colors border border-slate-700"
+                title="Müşteri yanıtlarının anında iletileceği yönetici WhatsApp numarasını ayarla"
+              >
+                <Settings className="w-3 h-3" />
+                <span>Yönetici No</span>
               </button>
             </div>
           </div>
@@ -1310,6 +1385,93 @@ export const Reconciliation: React.FC = () => {
                 Kapat
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 10. YÖNETİCİ WHATSAPP BİLDİRİM NUMARASI MODALI */}
+      {showManagerModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Bell className="w-5 h-5 text-amber-400" /> Yönetici WhatsApp Bildirim Hattı
+              </h3>
+              <button onClick={() => setShowManagerModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Müşterileriniz mutabakatı onayladığında (<b>Mutabıkız</b>) veya itiraz ettiğinde (<b>Fark Var</b>), şirket WhatsApp hattınız üzerinden bu yönetici numarasına anlık olarak ayrıntılı bildirim mesajı iletilir.
+            </p>
+
+            {managerModalSuccess && (
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{managerModalSuccess}</span>
+              </div>
+            )}
+
+            {managerModalError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{managerModalError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveManagerPhone} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Yönetici Telefon Numarası
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="tel"
+                    required
+                    value={tempManagerPhone}
+                    onChange={(e) => setTempManagerPhone(e.target.value)}
+                    placeholder="05XXXXXXXXX"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-9 pr-3 py-2.5 text-white font-mono text-sm outline-none focus:border-amber-500"
+                  />
+                </div>
+                <span className="text-[11px] text-slate-500 mt-1 block">
+                  Örn: 05321234567 veya 905321234567
+                </span>
+              </div>
+
+              <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={handleTestManagerPhone}
+                  disabled={isTestingManagerPhone || !tempManagerPhone || !waStatus.isConnected}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded-xl font-semibold flex items-center justify-center gap-1.5 border border-slate-700 disabled:opacity-50 transition-colors"
+                  title={!waStatus.isConnected ? 'WhatsApp bağlı olmadığı için test gönderilemez' : 'Test bildirimi gönder'}
+                >
+                  {isTestingManagerPhone ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  <span>Test Bildirimi Gönder</span>
+                </button>
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowManagerModal(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold"
+                  >
+                    İptal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingManagerPhone}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 transition-colors"
+                  >
+                    {isSavingManagerPhone ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    <span>Kaydet</span>
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

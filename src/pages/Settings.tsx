@@ -6,7 +6,7 @@ import {
   TrendingUp, Percent, Landmark, Receipt, Users, UserPlus, Lock, KeyRound, 
   CheckCircle2, AlertCircle, Edit2, X, Eye, EyeOff, Loader2,
   ShieldCheck, ShieldAlert, ShieldOff, QrCode, Copy, Check,
-  Bot, Send, Power, HelpCircle, Plus
+  Bot, Send, Power, HelpCircle, Plus, Bell
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
@@ -1146,6 +1146,28 @@ const Settings = () => {
                     </p>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* Cari Mutabakat Yönetici Bildirim Hattı */}
+            <div className="border-t border-slate-800 pt-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                <Bell className="w-4 h-4 text-emerald-400" /> Cari Mutabakat Yönetici WhatsApp Bildirim Hattı
+              </h4>
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                <label className="block text-xs font-semibold text-slate-300">
+                  Yönetici WhatsApp Telefon Numarası
+                </label>
+                <input
+                  type="text"
+                  value={globalSettings.reconciliationManagerPhone || ''}
+                  onChange={e => setGlobalSettings(p => ({ ...p, reconciliationManagerPhone: e.target.value, managerPhone: e.target.value }))}
+                  placeholder="Örn: 0532 123 45 67 veya 905321234567"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white font-mono text-sm outline-none focus:border-emerald-500"
+                />
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Müşteriler cari mutabakat linkine tıklayıp <b>"Mutabıkız"</b> veya <b>"Fark Var / İtiraz"</b> yanıtı verdiğinde; sistem WhatsApp gönderici hattınız üzerinden otomatik olarak bu yönetici numarasına anlık detaylı bildirim gönderir.
+                </p>
               </div>
             </div>
 

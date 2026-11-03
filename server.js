@@ -4065,6 +4065,88 @@ async function dispatchReconciliationItem(rec, req) {
     };
 }
 
+// Yönetici Telefon Numarasını Al
+async function getReconciliationManagerPhone() {
+    if (!db) return null;
+    try {
+        const row = await db.get("SELECT data FROM global_settings WHERE id = 1");
+        if (row && row.data) {
+            const data = JSON.parse(row.data);
+            return data.reconciliationManagerPhone || data.managerPhone || null;
+        }
+    } catch (_) {}
+    return null;
+}
+
+// Mutabakata Yanıt Geldiğinde Yöneticiye WhatsApp Bildirimi İlet
+async function notifyManagerOnReconciliationResponse({ rec, firm, dbStatus, status, cleanBalance, cleanNote, cleanName, cleanTitle, clientIp, req }) {
+    try {
+        if (!isWaConnected || !waSocket) {
+            console.log('[Yönetici Bildirimi] WhatsApp bağlı olmadığı için bildirim gönderilemedi.');
+            return;
+        }
+
+        const rawManagerPhone = await getReconciliationManagerPhone();
+        if (!rawManagerPhone) {
+            console.log('[Yönetici Bildirimi] Yönetici telefon numarası tanımlanmadığı için bildirim atlandı.');
+            return;
+        }
+
+        const targetPhone = formatPhoneForWhatsApp(rawManagerPhone);
+        if (!targetPhone) {
+            console.log('[Yönetici Bildirimi] Geçerli bir yönetici WhatsApp numarası bulunamadı:', rawManagerPhone);
+            return;
+        }
+
+        const firmName = firm?.name || 'Bilinmeyen Firma';
+        const displayPeriod = formatPeriodDisplay(rec.period);
+        const systemBalance = Number(rec.balance) || 0;
+        let systemBakiyeStr = "0.00 TL (HESABIMIZ DENKTİR)";
+        if (systemBalance > 0) systemBakiyeStr = `${systemBalance.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇLU`;
+        else if (systemBalance < 0) systemBakiyeStr = `${Math.abs(systemBalance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAKLI`;
+
+        const isApproved = dbStatus === 'APPROVED' || status === 'MUTABIK';
+        const statusHeader = isApproved 
+            ? "✅ *YENİ MUTABAKAT ONAYLANDI*" 
+            : "⚠️ *MUTABAKATA İTİRAZ / FARK BİLDİRİLDİ*";
+
+        let message = 
+            `${statusHeader}\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `🏢 *Firma:* ${firmName}\n` +
+            `🗓️ *Kesim Tarihi:* ${displayPeriod}\n` +
+            `📊 *Sistem Cari Bakiyesi:* ${systemBakiyeStr}\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `👤 *Yanıtlayan Yetkili:* ${cleanName}\n` +
+            `💼 *Görevi / Unvanı:* ${cleanTitle}\n` +
+            `⏰ *Yanıt Zamanı:* ${new Date().toLocaleString('tr-TR')}\n`;
+
+        if (!isApproved) {
+            let musteriBakiyeStr = "Belirtilmedi";
+            if (cleanBalance !== null && cleanBalance !== undefined) {
+                musteriBakiyeStr = `${Number(cleanBalance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`;
+            }
+            message += 
+                `━━━━━━━━━━━━━━━━━━━━━\n` +
+                `💵 *Firmanın İddia Ettiği Bakiye:* ${musteriBakiyeStr}\n` +
+                `📝 *İtiraz / Fark Açıklaması:*\n"${cleanNote || 'Açıklama belirtilmedi'}"\n`;
+        }
+
+        const baseUrl = getBaseUrl(req);
+        message += 
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `🌐 *Müşteri IP:* ${clientIp || 'Bilinmiyor'}\n` +
+            `📄 *Mutabakat Web & PDF:*\n${baseUrl}/mutabakat/${rec.token}\n\n` +
+            `_OSGB Finans Otomasyon Bildirimi_`;
+
+        const jid = `${targetPhone}@s.whatsapp.net`;
+        await waSocket.sendMessage(jid, { text: message });
+        console.log(`[Yönetici Bildirimi] ${firmName} mutabakat yanıtı (${dbStatus}) yöneticiye iletildi (${targetPhone}).`);
+    } catch (err) {
+        console.error('[Yönetici Bildirimi] WhatsApp mesaj gönderme hatası:', err.message);
+    }
+}
+
 // SMTP Ayarlarını Getir
 app.get('/api/smtp/config', authenticateToken, requireAdmin, async (req, res) => {
     try {
@@ -4376,6 +4458,72 @@ app.post('/api/reconciliation/update-contact', authenticateToken, requireAdmin, 
     }
 });
 
+// Yönetici Mutabakat Bildirim Ayarlarını Getir
+app.get('/api/reconciliation/settings', authenticateToken, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const managerPhone = await getReconciliationManagerPhone();
+        res.json({ managerPhone: managerPhone || '' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Yönetici Mutabakat Bildirim Ayarlarını Kaydet
+app.post('/api/reconciliation/settings', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { managerPhone } = req.body;
+        const cleanPhone = String(managerPhone || '').trim();
+
+        const settingsRow = await db.get("SELECT data FROM global_settings WHERE id = 1");
+        let globalSettings = {};
+        try { if (settingsRow?.data) globalSettings = JSON.parse(settingsRow.data); } catch (_) {}
+
+        globalSettings.reconciliationManagerPhone = cleanPhone;
+        globalSettings.managerPhone = cleanPhone;
+
+        await db.run("INSERT OR REPLACE INTO global_settings (id, data) VALUES (1, ?)", [JSON.stringify(globalSettings)]);
+        await logAuditEvent(req, 'RECONCILIATION_SETTINGS_UPDATED', { managerPhone: cleanPhone }, 'SUCCESS');
+        res.json({ success: true, managerPhone: cleanPhone });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Yöneticiye Test Bildirimi Gönder
+app.post('/api/reconciliation/test-manager-notification', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!isWaConnected || !waSocket) {
+            return res.status(400).json({ error: 'WhatsApp servisi bağlı değil. Lütfen önce QR kod ile WhatsApp bağlayınız.' });
+        }
+        const { managerPhone } = req.body;
+        const rawPhone = managerPhone || await getReconciliationManagerPhone();
+        const targetPhone = formatPhoneForWhatsApp(rawPhone);
+        if (!targetPhone) {
+            return res.status(400).json({ error: 'Lütfen geçerli bir yönetici telefon numarası giriniz (örn: 05xxxxxxxxx).' });
+        }
+
+        const testMsg = 
+            `🔔 *OSGB MUTABAKAT YÖNETİCİ BİLDİRİM TESTİ*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Sayın Yönetici,\n` +
+            `Bu bir test bildirimidir. Şirketinizin WhatsApp hattı başarıyla bağlanmış olup, müşterileriniz mutabakatı onayladığında veya itiraz/fark bildirdiğinde tüm detaylar anlık olarak bu numaranıza iletilecektir.\n\n` +
+            `✅ *Sistem Durumu:* Aktif & Bağlı\n` +
+            `⏰ *Tarih:* ${new Date().toLocaleString('tr-TR')}\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `_OSGB Finans Otomasyon Servisi_`;
+
+        const jid = `${targetPhone}@s.whatsapp.net`;
+        await waSocket.sendMessage(jid, { text: testMsg });
+
+        res.json({ success: true, message: `Test bildirimi başarıyla "${targetPhone}" numarasına iletildi.` });
+    } catch (e) {
+        console.error('Test yönetici bildirimi hatası:', e);
+        res.status(500).json({ error: 'Test mesajı iletilemedi: ' + e.message });
+    }
+});
+
 // Eski Telefon Numarası Güncelle (Geriye Dönük Uyumluluk)
 app.post('/api/reconciliation/update-phone', authenticateToken, requireAdmin, async (req, res) => {
     try {
@@ -4593,6 +4741,8 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
         const rec = await db.get("SELECT * FROM reconciliations WHERE token = ?", [token]);
         if (!rec) return res.status(404).json({ error: 'Geçersiz veya süresi dolmuş mutabakat bağlantısı.' });
 
+        const firm = await getFirmById(rec.firm_id);
+
         // Onaylanmış mutabakatı değiştirilmeye karşı koruma
         if (rec.status === 'APPROVED') {
             return res.status(400).json({ error: 'Bu mutabakat daha önce resmi olarak onaylanmıştır ve üzerinde değişiklik yapılamaz.' });
@@ -4618,6 +4768,20 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
             responderName: cleanName,
             responderTitle: cleanTitle
         });
+
+        // Yöneticiye anlık WhatsApp bildirimi ilet
+        notifyManagerOnReconciliationResponse({
+            rec,
+            firm,
+            dbStatus,
+            status,
+            cleanBalance,
+            cleanNote,
+            cleanName,
+            cleanTitle,
+            clientIp,
+            req
+        }).catch(err => console.error('[Yönetici Bildirimi Hatası]:', err));
 
         res.json({ success: true, message: 'Yanıtınız başarıyla kaydedildi. Teşekkür ederiz.' });
     } catch (e) {
