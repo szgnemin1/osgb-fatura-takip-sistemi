@@ -82,6 +82,7 @@ export const Reconciliation: React.FC = () => {
 
   // Toplu Gönderim State
   const [showBatchModal, setShowBatchModal] = useState(false);
+  const [showPendingModal, setShowPendingModal] = useState(false);
   const [isSendingBatch, setIsSendingBatch] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; firmName?: string; channel?: string } | null>(null);
 
@@ -536,175 +537,86 @@ export const Reconciliation: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. KPI İSTATİSTİK KARTLARI */}
+      {/* 3. KPI İSTATİSTİK KARTLARI (TIKLANABİLİR FİLTRE & BEKLEYENLER MODALI) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('all')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'all' ? 'bg-slate-800 border-slate-600 shadow-md ring-1 ring-slate-500/30' : 'bg-slate-900 border-slate-800 hover:border-slate-700'}`}
+          title="Tüm firmaları listelemek için tıklayın"
+        >
           <div className="text-[10px] text-slate-400 font-medium">Toplam Firma</div>
           <div className="text-base sm:text-lg font-bold text-white mt-0.5">{stats.total}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('HAS_BOTH')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'HAS_BOTH' ? 'bg-sky-950/40 border-sky-600 shadow-md ring-1 ring-sky-500/30' : 'bg-slate-900 border-slate-800 hover:border-sky-700/50'}`}
+          title="İki kanalı olanları filtrelemek için tıklayın"
+        >
           <div className="text-[10px] text-sky-400 font-medium flex items-center gap-1">
             <Mail className="w-3 h-3" /> + <Smartphone className="w-3 h-3" /> İkisi De
           </div>
           <div className="text-base sm:text-lg font-bold text-sky-300 mt-0.5">{stats.hasBoth || 0}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('SENT')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'SENT' ? 'bg-purple-950/40 border-purple-600 shadow-md ring-1 ring-purple-500/30' : 'bg-slate-900 border-slate-800 hover:border-purple-700/50'}`}
+          title="İletilen mutabakatları filtrelemek için tıklayın"
+        >
           <div className="text-[10px] text-purple-400 font-medium">İletilenler</div>
           <div className="text-base sm:text-lg font-bold text-purple-300 mt-0.5">{stats.sent}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('APPROVED')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'APPROVED' ? 'bg-emerald-950/40 border-emerald-600 shadow-md ring-1 ring-emerald-500/30' : 'bg-slate-900 border-slate-800 hover:border-emerald-700/50'}`}
+          title="Mutabık olanları filtrelemek için tıklayın"
+        >
           <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
             <CheckCircle2 className="w-3 h-3" /> Mutabık
           </div>
           <div className="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">{stats.approved}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('DISPUTED')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'DISPUTED' ? 'bg-rose-950/40 border-rose-600 shadow-md ring-1 ring-rose-500/30' : 'bg-slate-900 border-slate-800 hover:border-rose-700/50'}`}
+          title="Fark bildirenleri filtrelemek için tıklayın"
+        >
           <div className="text-[10px] text-rose-400 font-medium flex items-center gap-1">
             <AlertTriangle className="w-3 h-3" /> Fark Var
           </div>
           <div className="text-base sm:text-lg font-bold text-rose-400 mt-0.5">{stats.disputed}</div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
-          <div className="text-[10px] text-amber-400 font-medium flex items-center gap-1">
-            <Clock className="w-3 h-3" /> Onay Bekleyen
-          </div>
-          <div className="text-base sm:text-lg font-bold text-amber-300 mt-0.5 flex items-baseline gap-1">
-            <span>{stats.pending}</span>
-            <span className="text-[10px] font-normal text-amber-400/80" title="Tüm dönemlerden müşteri yanıtı bekleyenler">
-              (Tüm: {pendingItems.length})
+        {/* ONAY BEKLEYEN KPI KARTI: Tıklanınca Bekleyenler Modalı Açılır */}
+        <div 
+          onClick={() => setShowPendingModal(true)}
+          className="bg-slate-900 border border-amber-500/40 hover:border-amber-400 hover:bg-amber-950/20 p-2.5 rounded-xl cursor-pointer transition-all shadow-sm group relative"
+          title="Müşteri onayı bekleyen firmaların detaylı listesini açmak için tıklayın"
+        >
+          <div className="text-[10px] text-amber-400 font-medium flex items-center justify-between gap-1">
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3 animate-pulse" /> Onay Bekleyen
             </span>
+            <span className="text-[9px] text-amber-300/60 group-hover:text-amber-300 font-semibold transition-colors">Listele ↗</span>
+          </div>
+          <div className="text-base sm:text-lg font-bold text-amber-300 mt-0.5">
+            {pendingItems.length}
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-2.5 rounded-xl">
+        <div 
+          onClick={() => setStatusFilter('MISSING_CONTACT')}
+          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'MISSING_CONTACT' ? 'bg-rose-950/40 border-rose-600 shadow-md ring-1 ring-rose-500/30' : 'bg-slate-900 border-slate-800 hover:border-rose-700/50'}`}
+          title="İletişim bilgisi eksik olanları filtrelemek için tıklayın"
+        >
           <div className="text-[10px] text-rose-400 font-medium flex items-center gap-1">
             <AlertCircle className="w-3 h-3 text-rose-400" /> İletişim Yok
           </div>
           <div className="text-base sm:text-lg font-bold text-rose-400 mt-0.5">{stats.missingContact || 0}</div>
         </div>
-      </div>
-
-      {/* 3.5 ONAY BEKLEYEN MUTABAKATLAR (TARİHTEN BAĞIMSIZ - AÇIK LİSTE) */}
-      <div className="bg-slate-900 border border-amber-500/30 rounded-xl p-3 shadow-md space-y-2">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-              <Clock className="w-4 h-4 animate-pulse" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-xs sm:text-sm font-bold text-white">Müşteri Onayı Bekleyen Mutabakatlar</h3>
-                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-extrabold border border-amber-500/30">
-                  {pendingItems.length} Firma Beklemede
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-400">
-                Tarih seçiminden bağımsızdır; karşı firma onay verene veya itiraz edene kadar burada aktif olarak bekler.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {pendingItems.length === 0 ? (
-          <div className="text-center py-4 text-slate-500 text-xs bg-slate-950/40 rounded-lg border border-slate-800/80">
-            <CheckCircle2 className="w-5 h-5 mx-auto mb-1 text-emerald-500/60" />
-            <span className="text-slate-300 font-medium text-xs">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-lg border border-slate-800/80">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950/90 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
-                <tr>
-                  <th className="py-1.5 px-2.5">Firma Adı & İletişim</th>
-                  <th className="py-1.5 px-2.5">Kesim Tarihi</th>
-                  <th className="py-1.5 px-2.5 text-right">Mutabakat Bakiyesi</th>
-                  <th className="py-1.5 px-2.5 text-center">Gönderilen Kanal</th>
-                  <th className="py-1.5 px-2.5 text-center">Gönderim Zamanı</th>
-                  <th className="py-1.5 px-2.5 text-right">İşlemler</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
-                {pendingItems.map((pItem) => {
-                  const balanceNum = Number(pItem.balance) || 0;
-                  return (
-                    <tr key={pItem.id} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="py-1.5 px-2.5">
-                        <div className="font-semibold text-white text-xs">{pItem.firm_name}</div>
-                        <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                          {pItem.phone && <span>📱 {pItem.phone}</span>}
-                          {pItem.email && <span>✉️ {pItem.email}</span>}
-                        </div>
-                      </td>
-                      <td className="py-1.5 px-2.5 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-mono text-[10.5px] border border-slate-700">
-                          🗓️ {formatDateTR(pItem.period)}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2.5 text-right font-mono font-bold whitespace-nowrap">
-                        {balanceNum > 0 ? (
-                          <span className="text-rose-400">{balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borç)</span>
-                        ) : balanceNum < 0 ? (
-                          <span className="text-emerald-400">{Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacak)</span>
-                        ) : (
-                          <span className="text-slate-400">0.00 TL (Denk)</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 px-2.5 text-center whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-semibold">
-                          {pItem.sent_channels === 'BOTH' ? '📱+✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2.5 text-center text-slate-400 text-[10.5px] whitespace-nowrap">
-                        {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
-                      </td>
-                      <td className="py-1.5 px-2.5 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            onClick={() => handleCopyLink(pItem.token)}
-                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                            title="Onay Linkini Kopyala"
-                          >
-                            {copiedToken === pItem.token ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                          <a
-                            href={`/mutabakat/${pItem.token}/pdf`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                            title="PDF İndir / Önizle"
-                          >
-                            <Download className="w-3 h-3" />
-                          </a>
-                          <button
-                            onClick={() => handleSendSingle(pItem)}
-                            disabled={sendingSingleId === pItem.id}
-                            className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1 transition-colors disabled:opacity-50"
-                            title="Tekrar Hatırlatma Gönder"
-                          >
-                            {sendingSingleId === pItem.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Send className="w-2.5 h-2.5" />}
-                            <span>Hatırlat</span>
-                          </button>
-                          <button
-                            onClick={() => handleResetStatus(pItem.id)}
-                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
-                            title="Durumu Sıfırla (Gönderilmediye Al)"
-                          >
-                            <RefreshCw className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {/* 4. ARAMA VE FİLTRELEME ÇUBUĞU */}
@@ -1471,6 +1383,151 @@ export const Reconciliation: React.FC = () => {
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 11. ONAY BEKLEYENLER MODALI (KPI KARTINA TIKLANINCA AÇILIR) */}
+      {showPendingModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-4xl w-full max-h-[88vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <Clock className="w-4 h-4 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">Müşteri Onayı Bekleyen Mutabakatlar</h3>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10.5px] font-extrabold border border-amber-500/30">
+                      {pendingItems.length} Firma
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-400 mt-0.5">
+                    Tüm dönemlerden müşterinin henüz yanıt vermediği açık mutabakat kayıtları
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPendingModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body: Table */}
+            <div className="p-3 sm:p-4 overflow-y-auto flex-1">
+              {pendingItems.length === 0 ? (
+                <div className="text-center py-8 text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
+                  <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-emerald-500/60" />
+                  <span className="text-slate-300 font-medium text-sm">Şu an müşteri onayı bekleyen açık mutabakat bulunmuyor.</span>
+                  <p className="text-slate-500 mt-1">Tüm gönderilenler onaylandı veya döneme ait yeni mutabakat gönderebilirsiniz.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
+                      <tr>
+                        <th className="py-2 px-3">Firma Adı & İletişim</th>
+                        <th className="py-2 px-3">Kesim Tarihi</th>
+                        <th className="py-2 px-3 text-right">Mutabakat Bakiyesi</th>
+                        <th className="py-2 px-3 text-center">Gönderilen Kanal</th>
+                        <th className="py-2 px-3 text-center">Gönderim Zamanı</th>
+                        <th className="py-2 px-3 text-right">İşlemler</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
+                      {pendingItems.map((pItem) => {
+                        const balanceNum = Number(pItem.balance) || 0;
+                        return (
+                          <tr key={pItem.id} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="py-2 px-3">
+                              <div className="font-semibold text-white text-xs">{pItem.firm_name}</div>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400">
+                                {pItem.phone && <span>📱 {pItem.phone}</span>}
+                                {pItem.email && <span>✉️ {pItem.email}</span>}
+                              </div>
+                            </td>
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-mono text-[10.5px] border border-slate-700">
+                                🗓️ {formatDateTR(pItem.period)}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap">
+                              {balanceNum > 0 ? (
+                                <span className="text-rose-400">{balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borç)</span>
+                              ) : balanceNum < 0 ? (
+                                <span className="text-emerald-400">{Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacak)</span>
+                              ) : (
+                                <span className="text-slate-400">0.00 TL (Denk)</span>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-center whitespace-nowrap">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-semibold">
+                                {pItem.sent_channels === 'BOTH' ? '📱+✉️ İkisi' : pItem.sent_channels === 'EMAIL' ? '✉️ E-Posta' : '📱 WhatsApp'}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-center text-slate-400 text-[10.5px] whitespace-nowrap">
+                              {pItem.sent_at ? new Date(pItem.sent_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                            </td>
+                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={() => handleCopyLink(pItem.token)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="Onay Linkini Kopyala"
+                                >
+                                  {copiedToken === pItem.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                                <a
+                                  href={`/mutabakat/${pItem.token}/pdf`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="PDF İndir / Önizle"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
+                                <button
+                                  onClick={() => handleSendSingle(pItem)}
+                                  disabled={sendingSingleId === pItem.id}
+                                  className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10.5px] font-bold flex items-center gap-1 transition-colors disabled:opacity-50"
+                                  title="Tekrar Hatırlatma Gönder"
+                                >
+                                  {sendingSingleId === pItem.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Send className="w-2.5 h-2.5" />}
+                                  <span>Hatırlat</span>
+                                </button>
+                                <button
+                                  onClick={() => handleResetStatus(pItem.id)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
+                                  title="Durumu Sıfırla (Gönderilmediye Al)"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 px-4 border-t border-slate-800 bg-slate-950/40 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowPendingModal(false)}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Kapat
+              </button>
+            </div>
           </div>
         </div>
       )}
