@@ -491,6 +491,22 @@ async function createDatabaseBackup() {
         updated_at TEXT
     );`);
 
+    // Cari Mutabakat Otomasyon Günlükleri Tablosu (Otopilot Takibi)
+    await db.run(`CREATE TABLE IF NOT EXISTS reconciliation_automation_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger_key TEXT UNIQUE NOT NULL,
+        period TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        stage_name TEXT,
+        target_date TEXT NOT NULL,
+        executed_at DATETIME NOT NULL,
+        status TEXT NOT NULL,
+        sent_count INTEGER DEFAULT 0,
+        details TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await db.run('CREATE INDEX IF NOT EXISTS idx_rec_auto_trigger ON reconciliation_automation_logs(trigger_key);');
+
     // SMTP Parolasını AES-256-GCM ile diskte şifrele (Migration)
     try {
         const currentSmtp = await db.get("SELECT id, pass FROM smtp_settings WHERE id = 1");
@@ -2609,6 +2625,30 @@ async function sendTelegramMessage(token, chatId, text, extra = {}) {
     }
 }
 
+// Yetkili Yöneticilere Telegram Botu Üzerinden Uyarı Bildirimi Gönderme
+async function broadcastTelegramAdminAlert(htmlMessage) {
+    try {
+        if (!db) return;
+        const tgCfg = await db.get("SELECT bot_token, is_active FROM telegram_config WHERE id = 1");
+        if (!tgCfg || !tgCfg.bot_token || !tgCfg.is_active) {
+            console.warn('[Telegram Alert] Telegram bot aktif veya yapılandırılmış değil, uyarı gönderilemedi.');
+            return;
+        }
+        const allowedUsers = await db.all("SELECT telegram_id FROM telegram_allowed_users");
+        if (!allowedUsers || allowedUsers.length === 0) {
+            console.warn('[Telegram Alert] Bildirim gönderilecek yetkili telegram kullanıcısı bulunamadı.');
+            return;
+        }
+        for (const u of allowedUsers) {
+            if (u.telegram_id) {
+                await sendTelegramMessage(tgCfg.bot_token, u.telegram_id, htmlMessage);
+            }
+        }
+    } catch (err) {
+        console.error('[Telegram Alert] Uyarı yayınlama hatası:', err.message);
+    }
+}
+
 // Telegram Callback Yanıtlama (Yükleniyor bildirimleri ve uyarılar)
 async function answerTelegramCallbackQuery(token, callbackQueryId, text = '', showAlert = false) {
     try {
@@ -4445,6 +4485,12 @@ async function notifyManagerOnReconciliationResponse({ rec, firm, dbStatus, stat
             `💼 *Görevi / Unvanı:* ${cleanTitle}\n` +
             `⏰ *Yanıt Zamanı:* ${new Date().toLocaleString('tr-TR')}\n`;
 
+        if (isApproved && cleanNote) {
+            message += 
+                `━━━━━━━━━━━━━━━━━━━━━\n` +
+                `📝 *Yetkili Onay Notu:*\n"${cleanNote}"\n`;
+        }
+
         if (!isApproved) {
             let musteriBakiyeStr = "Belirtilmedi";
             if (cleanBalance !== null && cleanBalance !== undefined) {
@@ -4716,34 +4762,27 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
     }
 });
 
-// Mutabakat Listesini Tarihe/Döneme Göre Hesapla & Veritabanına Yaz
-app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (req, res) => {
+// Seçilen Dönem / Tarih İçin Tüm Firmaların Mutabakat Kayıtlarını Oluştur & Güncelle
+async function prepareReconciliationsForPeriod(period) {
+    if (!db || !period) return 0;
+    const cutoffTime = !isNaN(Date.parse(period)) ? new Date(period + 'T23:59:59.999Z').getTime() : null;
+
+    const firmRows = await db.all("SELECT id, data FROM firms");
+    const allTransactionsRows = await db.all("SELECT data FROM transactions");
+    const allTransactions = allTransactionsRows.map(r => {
+        try { return JSON.parse(r.data); } catch (_) { return null; }
+    }).filter(Boolean);
+
+    const now = new Date().toISOString();
+    let upsertedCount = 0;
+
+    await db.run('BEGIN IMMEDIATE TRANSACTION');
     try {
-        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
-        const { period } = req.body;
-        if (!period) return res.status(400).json({ error: 'Mutabakat tarihi seçimi zorunludur.' });
-
-        // Kesim tarihi filtresi (Eğer YYYY-MM-DD veya geçerli bir tarih ise bu tarihten sonraki hareketleri hariç tut)
-        const cutoffTime = !isNaN(Date.parse(period)) ? new Date(period + 'T23:59:59.999Z').getTime() : null;
-
-        // Tüm firmaları al
-        const firmRows = await db.all("SELECT id, data FROM firms");
-        const allTransactionsRows = await db.all("SELECT data FROM transactions");
-        const allTransactions = allTransactionsRows.map(r => {
-            try { return JSON.parse(r.data); } catch (_) { return null; }
-        }).filter(Boolean);
-
-        const now = new Date().toISOString();
-        let upsertedCount = 0;
-
-        await db.run('BEGIN IMMEDIATE TRANSACTION');
-
         for (const fRow of firmRows) {
             let firm = {};
             try { firm = JSON.parse(fRow.data); } catch (_) {}
             const firmId = fRow.id;
 
-            // Bu firmaya ait onaylı ve seçilen kesim tarihine kadar olan hareketler
             const firmTrans = allTransactions.filter(t => {
                 if (String(t.firmId) !== String(firmId)) return false;
                 if (t.status && t.status !== 'APPROVED') return false;
@@ -4758,7 +4797,6 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
             const totalPaid = firmTrans.reduce((s, t) => s + (Number(t.credit) || 0), 0);
             const balance = totalBilled - totalPaid;
 
-            // Var olan mutabakat kaydı var mı kontrol et
             const existing = await db.get(
                 "SELECT * FROM reconciliations WHERE firm_id = ? AND period = ?",
                 [firmId, period]
@@ -4768,12 +4806,14 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
             const email = firm.email || existing?.email || '';
 
             if (existing) {
-                await db.run(
-                    `UPDATE reconciliations 
-                     SET balance = ?, total_billed = ?, total_paid = ?, phone = ?, email = ?, updated_at = ?
-                     WHERE id = ?`,
-                    [balance, totalBilled, totalPaid, phone, email, now, existing.id]
-                );
+                if (existing.status !== 'APPROVED' && existing.status !== 'DISPUTED') {
+                    await db.run(
+                        `UPDATE reconciliations 
+                         SET balance = ?, total_billed = ?, total_paid = ?, phone = ?, email = ?, updated_at = ?
+                         WHERE id = ?`,
+                        [balance, totalBilled, totalPaid, phone, email, now, existing.id]
+                    );
+                }
             } else {
                 const recId = 'rec_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
                 const token = crypto.randomBytes(16).toString('hex');
@@ -4786,13 +4826,25 @@ app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (
             }
             upsertedCount++;
         }
-
         await db.run('COMMIT');
+        return upsertedCount;
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+    }
+}
 
+// Mutabakat Listesini Tarihe/Döneme Göre Hesapla & Veritabanına Yaz
+app.post('/api/reconciliation/prepare', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const { period } = req.body;
+        if (!period) return res.status(400).json({ error: 'Mutabakat tarihi seçimi zorunludur.' });
+
+        const upsertedCount = await prepareReconciliationsForPeriod(period);
         await logAuditEvent(req, 'RECONCILIATION_PREPARED', { period, count: upsertedCount }, 'SUCCESS');
         res.json({ success: true, count: upsertedCount });
     } catch (e) {
-        try { await db.run('ROLLBACK'); } catch (_) {}
         console.error('Mutabakat hazırlama hatası:', e);
         res.status(500).json({ error: 'Mutabakat hazırlanamadı: ' + e.message });
     }
@@ -5120,16 +5172,22 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
 
         let cleanNote = null;
         let cleanBalance = null;
-        if (status === 'FARK_VAR') {
+        if (status === 'MUTABIK') {
+            cleanNote = responseNote ? String(responseNote).replace(/[\r\t]/g, '').trim() : null;
+            if (cleanNote && cleanNote.length > 1000) cleanNote = cleanNote.substring(0, 1000);
+        } else if (status === 'FARK_VAR') {
             cleanNote = responseNote ? String(responseNote).replace(/[\r\t]/g, '').trim() : '';
             if (!cleanNote || cleanNote.length < 2 || cleanNote.length > 1000) {
-                return res.status(400).json({ error: 'Lütfen farkın nedenini belirten bir açıklama giriniz (en fazla 1000 karakter).' });
+                return res.status(400).json({ error: 'Lütfen farkın nedenini belirten bir açıklama giriniz (2 - 1000 karakter).' });
             }
             if (responseBalance !== undefined && responseBalance !== null && responseBalance !== '') {
                 const num = Number(responseBalance);
                 if (Number.isFinite(num) && Math.abs(num) <= 1e9) {
                     cleanBalance = num;
                 }
+            }
+            if (!disputeFile || !disputeFileName) {
+                return res.status(400).json({ error: 'Fark / itiraz bildirimlerinde firmanıza ait cari hesap ekstresi / muavin dökümü yüklenmesi zorunludur.' });
             }
         }
 
@@ -5146,27 +5204,33 @@ app.post('/api/mutabakat/public-respond', async (req, res) => {
         let savedDisputeFilePath = null;
         let savedDisputeFileName = null;
 
-        if (status === 'FARK_VAR' && disputeFile && disputeFileName) {
+        if (status === 'FARK_VAR') {
             try {
                 let base64Data = String(disputeFile);
                 if (base64Data.includes(',')) {
                     base64Data = base64Data.split(',')[1];
                 }
                 const fileBuf = Buffer.from(base64Data, 'base64');
-                if (fileBuf.length <= 15 * 1024 * 1024) {
-                    const ext = path.extname(disputeFileName).toLowerCase();
-                    const allowedExts = ['.pdf', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.doc', '.docx'];
-                    if (allowedExts.includes(ext)) {
-                        const safeOriginalName = path.basename(disputeFileName).replace(/[^a-zA-Z0-9._-]/g, '_');
-                        savedDisputeFileName = safeOriginalName;
-                        const diskFileName = `${token}_${Date.now()}_${safeOriginalName}`;
-                        savedDisputeFilePath = path.join(reconciliationFilesDir, diskFileName);
-                        fs.writeFileSync(savedDisputeFilePath, fileBuf);
-                        console.log('[Mutabakat Ekstre] Müşteri ekstresi başarıyla kaydedildi:', savedDisputeFilePath);
-                    }
+                if (fileBuf.length > 15 * 1024 * 1024) {
+                    return res.status(400).json({ error: 'Yüklenen ekstre belgesi 15MB boyut sınırını aşamaz.' });
                 }
+                const ext = path.extname(disputeFileName).toLowerCase();
+                const allowedExts = ['.pdf', '.xlsx', '.xls', '.csv', '.png', '.jpg', '.jpeg', '.doc', '.docx'];
+                if (!allowedExts.includes(ext)) {
+                    return res.status(400).json({ error: 'Geçersiz dosya formatı. Lütfen PDF, Excel (.xlsx, .xls, .csv) veya görsel formatında bir belge yükleyiniz.' });
+                }
+                const safeOriginalName = path.basename(disputeFileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+                savedDisputeFileName = safeOriginalName;
+                const diskFileName = `${token}_${Date.now()}_${safeOriginalName}`;
+                savedDisputeFilePath = path.join(reconciliationFilesDir, diskFileName);
+                fs.writeFileSync(savedDisputeFilePath, fileBuf);
+                console.log('[Mutabakat Ekstre] Müşteri ekstresi başarıyla kaydedildi:', savedDisputeFilePath);
             } catch (fileErr) {
                 console.error('[Mutabakat Ekstre Kayıt Hatası]:', fileErr.message);
+                return res.status(400).json({ error: 'Yüklenen ekstre belgesi işlenemedi. Lütfen tekrar deneyiniz.' });
+            }
+            if (!savedDisputeFilePath) {
+                return res.status(400).json({ error: 'Ekstre belgesi kaydedilemedi.' });
             }
         }
 
@@ -5248,6 +5312,252 @@ app.get('/api/reconciliation/schedules', authenticateToken, (req, res) => {
         res.json({ year, schedules });
     } catch (e) {
         res.status(500).json({ error: 'Takvim hesaplanamadı: ' + e.message });
+    }
+});
+
+// --- CARİ MUTABAKAT OTOMATİK OTOPİLOT MOTORU ---
+// 4 Çeyrek Dönem Takvimine (8-17-24-28 Nisan/Temmuz/Ekim, 10-19-25-29 Ocak) göre
+// tam otomatik ilk gönderim ve hatırlatmaları yönetir.
+// Gönderim öncesinde bağlantı sorunu (WhatsApp/SMTP) varsa yetkililere Telegram'dan bildirim iletir.
+async function runReconciliationAutopilot(forceCheck = false) {
+    if (!db) return { success: false, reason: 'Veritabanı hazır değil.' };
+
+    try {
+        const nowTR = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Istanbul" }));
+        const todayStr = nowTR.toISOString().slice(0, 10);
+        const currentYear = nowTR.getFullYear();
+
+        // Cari yıl ve bir önceki yıl (Ocak ayı Q4 takibi için) takvimlerini al
+        const allSchedules = [
+            ...getQuarterSchedules(currentYear),
+            ...getQuarterSchedules(currentYear - 1)
+        ];
+
+        // Bugün çalışması gereken aşamaları bul
+        const matchingTasks = [];
+        for (const q of allSchedules) {
+            for (const st of q.stages) {
+                if (st.adjustedDate === todayStr) {
+                    matchingTasks.push({ quarter: q, stage: st });
+                }
+            }
+        }
+
+        if (matchingTasks.length === 0 && !forceCheck) {
+            return { success: true, message: 'Bugün için planlanmış bir otomatik mutabakat görevi yok.', today: todayStr };
+        }
+
+        const results = [];
+
+        for (const task of matchingTasks) {
+            const { quarter, stage } = task;
+            const triggerKey = `${quarter.quarterKey}_${stage.stage}_${stage.adjustedDate}_${quarter.cutoffDate}`;
+
+            // Daha önce bugün başarıyla çalıştırıldı mı?
+            const existingLog = await db.get(
+                "SELECT * FROM reconciliation_automation_logs WHERE trigger_key = ? AND status = 'SUCCESS'",
+                [triggerKey]
+            );
+            if (existingLog && !forceCheck) {
+                results.push({ triggerKey, status: 'SKIPPED_ALREADY_DONE' });
+                continue;
+            }
+
+            // 1. ÖN KONTROL (PRE-FLIGHT HEALTH CHECK): WhatsApp & E-Posta (SMTP)
+            const isWaHealthy = Boolean(isWaConnected && waSocket);
+            const smtp = await getSmtpSettings();
+            const isSmtpHealthy = Boolean(smtp && smtp.host && smtp.user);
+
+            // Eğer WhatsApp veya SMTP'de sorun varsa Telegram üzerinden uyarı gönder!
+            if (!isWaHealthy || !isSmtpHealthy) {
+                const lastAlert = await db.get(
+                    "SELECT executed_at FROM reconciliation_automation_logs WHERE trigger_key = ? AND status = 'WARNING_CONNECTION' ORDER BY id DESC LIMIT 1",
+                    [triggerKey]
+                );
+                const canAlert = !lastAlert || (Date.now() - new Date(lastAlert.executed_at).getTime() > 4 * 60 * 60 * 1000);
+
+                if (canAlert) {
+                    const warnHtml = 
+                        `⚠️ <b>[CARİ MUTABAKAT OTOPİLOT BAĞLANTI UYARISI]</b>\n` +
+                        `━━━━━━━━━━━━━━━━━━━━━\n` +
+                        `Bugün yapılması planlanan <b>${escapeTelegramHtml(quarter.quarterName)}</b> - <b>${escapeTelegramHtml(stage.name)}</b> mutabakat gönderimi için sistem bağlantı kontrolü yaptı:\n\n` +
+                        `${isWaHealthy ? '✅ <b>WhatsApp Hattı:</b> Bağlı ve aktif\n' : '❌ <b>WhatsApp Hattı:</b> Bağlı değil! (Lütfen panele girip QR kod okutunuz)\n'}` +
+                        `${isSmtpHealthy ? '✅ <b>E-Posta (SMTP):</b> Hazır\n' : '❌ <b>E-Posta (SMTP):</b> Sunucu ayarı eksik veya erişilemiyor!\n'}` +
+                        `━━━━━━━━━━━━━━━━━━━━━\n` +
+                        `⚠️ <i>Müşterilere eksik tebliğ yapılmaması adına otomatik gönderim bağlantı sağlanana kadar bekletilmektedir. Bağlantı kurulduğunda gönderim otomatik tamamlanacaktır.</i>`;
+                    
+                    await broadcastTelegramAdminAlert(warnHtml);
+                    console.log(`[Otopilot] Bağlantı uyarısı Telegram üzerinden iletildi (${triggerKey}).`);
+                }
+
+                await db.run(
+                    `INSERT OR REPLACE INTO reconciliation_automation_logs 
+                     (trigger_key, period, stage, stage_name, target_date, executed_at, status, sent_count, details) 
+                     VALUES (?, ?, ?, ?, ?, ?, 'WARNING_CONNECTION', 0, ?)`,
+                    [triggerKey, quarter.cutoffDate, stage.stage, stage.name, stage.adjustedDate, new Date().toISOString(), `WhatsApp: ${isWaHealthy ? 'OK' : 'DISCONNECTED'} | SMTP: ${isSmtpHealthy ? 'OK' : 'MISSING'}`]
+                );
+
+                results.push({ triggerKey, status: 'WARNING_CONNECTION', reason: 'Bağlantı sorunları nedeniyle Telegram uyarısı gönderildi ve işlem beklemeye alındı.' });
+                continue;
+            }
+
+            // 2. OTOMATİK HAZIRLIK VE GÖNDERİM
+            // Dönemin bakiyelerini otomatik hesapla/hazırla
+            await prepareReconciliationsForPeriod(quarter.cutoffDate);
+
+            let sentCount = 0;
+            const errors = [];
+
+            if (stage.stage === 'INITIAL') {
+                const pendingSendList = await db.all(
+                    `SELECT r.* FROM reconciliations r 
+                     WHERE r.period = ? AND (r.status IN ('PENDING_SEND', 'DRAFT') OR r.sent_at IS NULL)`,
+                    [quarter.cutoffDate]
+                );
+
+                for (const rec of pendingSendList) {
+                    try {
+                        const firm = await getFirmById(rec.firm_id);
+                        const hasPhone = Boolean(formatPhoneForWhatsApp(rec.phone || firm?.phone));
+                        const hasEmail = Boolean((rec.email || firm?.email || '').trim().includes('@'));
+                        if (hasPhone || hasEmail) {
+                            await dispatchReconciliationItem(rec, null, 'INITIAL');
+                            sentCount++;
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                    } catch (err) {
+                        errors.push(`${rec.id}: ${err.message}`);
+                    }
+                }
+            } else {
+                const pendingReplyList = await db.all(
+                    `SELECT r.* FROM reconciliations r 
+                     WHERE r.period = ? AND r.status = 'SENT' AND r.response_status IS NULL`,
+                    [quarter.cutoffDate]
+                );
+
+                for (const rec of pendingReplyList) {
+                    try {
+                        await dispatchReconciliationItem(rec, null, stage.stage);
+                        sentCount++;
+                        await new Promise(r => setTimeout(r, 500));
+                    } catch (err) {
+                        errors.push(`${rec.id}: ${err.message}`);
+                    }
+                }
+            }
+
+            const nowIso = new Date().toISOString();
+            await db.run(
+                `INSERT OR REPLACE INTO reconciliation_automation_logs 
+                 (trigger_key, period, stage, stage_name, target_date, executed_at, status, sent_count, details) 
+                 VALUES (?, ?, ?, ?, ?, ?, 'SUCCESS', ?, ?)`,
+                [triggerKey, quarter.cutoffDate, stage.stage, stage.name, stage.adjustedDate, nowIso, sentCount, errors.length > 0 ? `Hatalar: ${errors.slice(0, 5).join('; ')}` : 'Başarıyla tamamlandı.']
+            );
+
+            await logAuditEvent(null, 'RECONCILIATION_AUTOPILOT_TRIGGERED', {
+                triggerKey,
+                period: quarter.cutoffDate,
+                stage: stage.stage,
+                sentCount,
+                errorsCount: errors.length
+            }, 'SUCCESS', 'SYSTEM_AUTOPILOT');
+
+            results.push({ triggerKey, status: 'SUCCESS', sentCount, errorsCount: errors.length });
+        }
+
+        return { success: true, today: todayStr, results };
+    } catch (e) {
+        console.error('[Cari Mutabakat Otopilot Hatası]:', e);
+        return { success: false, error: e.message };
+    }
+}
+
+// Otopilot Durum ve Takvim Bilgisi
+app.get('/api/reconciliation/autopilot-status', authenticateToken, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+
+        const nowTR = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Istanbul" }));
+        const todayStr = nowTR.toISOString().slice(0, 10);
+        const currentYear = nowTR.getFullYear();
+
+        const allSchedules = [
+            ...getQuarterSchedules(currentYear),
+            ...getQuarterSchedules(currentYear + 1)
+        ];
+
+        // Gelecek ilk görevi bul
+        let nextEvent = null;
+        for (const q of allSchedules) {
+            for (const st of q.stages) {
+                if (st.adjustedDate >= todayStr) {
+                    const daysRemaining = Math.max(0, Math.ceil((new Date(st.adjustedDate + 'T00:00:00').getTime() - new Date(todayStr + 'T00:00:00').getTime()) / (1000 * 60 * 60 * 24)));
+                    nextEvent = {
+                        quarterKey: q.quarterKey,
+                        quarterName: q.quarterName,
+                        cutoffDate: q.cutoffDate,
+                        stage: st.stage,
+                        stageName: st.name,
+                        targetDate: st.adjustedDate,
+                        daysRemaining,
+                        isToday: st.adjustedDate === todayStr,
+                        ruleDesc: st.ruleDesc
+                    };
+                    break;
+                }
+            }
+            if (nextEvent) break;
+        }
+
+        const isWaHealthy = Boolean(isWaConnected && waSocket);
+        const smtp = await getSmtpSettings();
+        const isSmtpHealthy = Boolean(smtp && smtp.host && smtp.user);
+        const tgCfg = await db.get("SELECT bot_token, bot_username, is_active FROM telegram_config WHERE id = 1");
+        const allowedUsers = await db.all("SELECT id FROM telegram_allowed_users");
+        const managerPhone = await getReconciliationManagerPhone();
+
+        const recentLogs = await db.all(
+            "SELECT * FROM reconciliation_automation_logs ORDER BY id DESC LIMIT 15"
+        );
+
+        res.json({
+            autopilotActive: true,
+            today: todayStr,
+            connections: {
+                whatsapp: {
+                    connected: isWaHealthy,
+                    phoneNumber: isWaHealthy ? waConnectedPhone : null
+                },
+                smtp: {
+                    configured: isSmtpHealthy,
+                    host: smtp?.host || null,
+                    user: smtp?.user || null
+                },
+                telegram: {
+                    configured: Boolean(tgCfg && tgCfg.bot_token && tgCfg.is_active),
+                    botUsername: tgCfg?.bot_username || null,
+                    allowedUsersCount: allowedUsers?.length || 0
+                },
+                managerPhone: managerPhone || null
+            },
+            nextScheduledEvent: nextEvent,
+            recentLogs: recentLogs || []
+        });
+    } catch (e) {
+        console.error('Otopilot durum hatası:', e);
+        res.status(500).json({ error: 'Otopilot durumu alınamadı: ' + e.message });
+    }
+});
+
+// Otopilot Kontrolünü Elle / Anında Çalıştır (Test ve Tetikleme)
+app.post('/api/reconciliation/autopilot-run-check', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        const { force = false } = req.body;
+        const result = await runReconciliationAutopilot(force);
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: 'Otopilot kontrolü çalıştırılamadı: ' + e.message });
     }
 });
 
@@ -5575,7 +5885,7 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     </button>
                                 </div>
 
-                                <!-- Onay Formu (Yetkili Adı & Görevi) -->
+                                <!-- Onay Formu (Yetkili Adı & Görevi & Opsiyonel Not) -->
                                 <div id="approvalForm" class="hidden bg-slate-950 p-5 rounded-2xl border border-emerald-500/40 space-y-3.5 mt-4 animate-in fade-in">
                                     <div class="flex items-center gap-2 text-xs font-bold text-emerald-400 pb-2 border-b border-slate-800">
                                         <span>✅ Cari Mutabakat Onay Formu</span>
@@ -5584,12 +5894,16 @@ app.get('/mutabakat/:token', async (req, res) => {
                                         Şirketiniz adına mutabakatı onaylayan yetkili kişinin bilgilerini giriniz:
                                     </p>
                                     <div>
-                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-emerald-400">*</span></label>
+                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-emerald-400">* (Zorunlu)</span></label>
                                         <input type="text" id="approveName" placeholder="Örn: Ahmet Yılmaz" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500">
                                     </div>
                                     <div>
-                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-emerald-400">*</span></label>
-                                        <input type="text" id="approveTitle" placeholder="Örn: Muhasebe Müdürü, Şirket Müdürü, Mali Müşavir" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500">
+                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-emerald-400">* (Zorunlu)</span></label>
+                                        <input type="text" id="approveTitle" placeholder="Örn: Muhasebe Müdürü, Mali Müşavir, Şirket Müdürü" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Açıklama / Ek Not <span class="text-slate-400 font-normal">(Opsiyonel)</span></label>
+                                        <textarea id="approveNote" rows="2" placeholder="Varsa belirtmek istediğiniz ek not veya referans..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-emerald-500"></textarea>
                                     </div>
                                     <div class="flex items-center justify-end gap-2 pt-2">
                                         <button type="button" onclick="hideApprovalForm()" class="px-3.5 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
@@ -5599,21 +5913,21 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     </div>
                                 </div>
 
-                                <!-- Fark Bildirim Formu (Gizli) -->
+                                <!-- Fark Bildirim Formu (Ad Soyad, Ünvan, Açıklama, Belge Zorunlu) -->
                                 <div id="disputeForm" class="hidden bg-slate-950 p-5 rounded-2xl border border-rose-500/40 space-y-3.5 mt-4 animate-in fade-in">
                                     <div class="flex items-center gap-2 text-xs font-bold text-rose-400 pb-2 border-b border-slate-800">
                                         <span>❌ Fark / İtiraz Bildirim Formu</span>
                                     </div>
                                     <p class="text-[11px] text-slate-400">
-                                        Lütfen işlemi yapan yetkilinin bilgilerini ve itiraz detayını giriniz:
+                                        Lütfen işlemi yapan yetkilinin bilgilerini, itiraz gerekçesini ve firmanıza ait cari ekstre belgesini giriniz:
                                     </p>
                                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                         <div>
-                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-rose-400">*</span></label>
+                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Yetkili Adı Soyadı <span class="text-rose-400">* (Zorunlu)</span></label>
                                             <input type="text" id="disputeName" placeholder="Örn: Ahmet Yılmaz" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
                                         </div>
                                         <div>
-                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-rose-400">*</span></label>
+                                            <label class="block text-[11px] font-semibold text-slate-300 mb-1">Görevi / Unvanı <span class="text-rose-400">* (Zorunlu)</span></label>
                                             <input type="text" id="disputeTitle" placeholder="Örn: Muhasebe Müdürü" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
                                         </div>
                                     </div>
@@ -5622,13 +5936,18 @@ app.get('/mutabakat/:token', async (req, res) => {
                                         <input type="number" id="statedBalance" placeholder="Örn: 15000" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500">
                                     </div>
                                     <div>
-                                        <label class="block text-[11px] text-slate-400 mb-1">Farkın Nedeni / Açıklamanız <span class="text-rose-400">*</span></label>
-                                        <textarea id="disputeNote" rows="2" placeholder="Örn: Eylül ayı faturası tarafımıza ulaşmadı veya ödeme eksik işlenmiş..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500"></textarea>
+                                        <label class="block text-[11px] text-slate-300 font-semibold mb-1">Farkın Nedeni / Açıklamanız <span class="text-rose-400">* (Zorunlu)</span></label>
+                                        <textarea id="disputeNote" rows="2" placeholder="Örn: Eylül faturası tarafımıza ulaşmadı veya ödeme kaydı eksik..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-rose-500"></textarea>
+                                    </div>
+                                    <div>
+                                        <label class="block text-[11px] text-slate-300 font-semibold mb-1">Cari Ekstre / Muavin Belgesi Yükleyiniz <span class="text-rose-400">* (Zorunlu)</span></label>
+                                        <input type="file" id="disputeFile" accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.doc,.docx" class="w-full bg-slate-900 border border-rose-500/50 rounded-xl px-3 py-2 text-white text-xs file:mr-3 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-rose-600 file:text-white hover:file:bg-rose-500 cursor-pointer outline-none focus:border-rose-500">
+                                        <p class="text-[10px] text-slate-400 mt-1">Uyuşmazlığın muhasebemizce incelenmesi için firmanızın cari hesap ekstresi veya muavini zorunludur (PDF, Excel, Görsel - Maks 15MB).</p>
                                     </div>
                                     <div class="flex items-center justify-end gap-2 pt-1">
                                         <button type="button" onclick="hideDisputeForm()" class="px-3.5 py-1.5 text-xs text-slate-400 hover:text-white">İptal</button>
                                         <button type="button" onclick="handleDisputeSubmit()" class="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-md">
-                                            <span>📩 Bildirimi İlet</span>
+                                            <span>📩 İtiraz & Ekstreyi İlet</span>
                                         </button>
                                     </div>
                                 </div>
@@ -5666,6 +5985,7 @@ app.get('/mutabakat/:token', async (req, res) => {
                     async function handleApproveSubmit() {
                         const name = document.getElementById('approveName')?.value.trim();
                         const title = document.getElementById('approveTitle')?.value.trim();
+                        const note = document.getElementById('approveNote')?.value.trim();
                         if (!name) {
                             alert('Lütfen adınızı ve soyadınızı giriniz.');
                             document.getElementById('approveName')?.focus();
@@ -5685,7 +6005,8 @@ app.get('/mutabakat/:token', async (req, res) => {
                                     token: TOKEN, 
                                     status: 'MUTABIK',
                                     responderName: name,
-                                    responderTitle: title
+                                    responderTitle: title,
+                                    responseNote: note || null
                                 })
                             });
                             const data = await res.json();
@@ -5716,28 +6037,31 @@ app.get('/mutabakat/:token', async (req, res) => {
                             return;
                         }
                         if (!note) {
-                            alert('Lütfen farkın nedenini belirten kısa bir açıklama yazınız.');
+                            alert('Lütfen farkın nedenini belirten kısa bir açıklama yazınız (Zorunludur).');
                             document.getElementById('disputeNote')?.focus();
                             return;
                         }
 
-                        let disputeFileBase64 = null;
-                        let disputeFileName = null;
                         const fileInput = document.getElementById('disputeFile');
-                        if (fileInput && fileInput.files && fileInput.files[0]) {
-                            const f = fileInput.files[0];
-                            if (f.size > 15 * 1024 * 1024) {
-                                alert('Yüklenen dosya boyutu 15MB sınırını aşamaz.');
-                                return;
-                            }
-                            disputeFileName = f.name;
-                            disputeFileBase64 = await new Promise((res, rej) => {
-                                const r = new FileReader();
-                                r.onload = () => res(r.result);
-                                r.onerror = rej;
-                                r.readAsDataURL(f);
-                            });
+                        if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+                            alert('Lütfen firmanıza ait cari hesap ekstresi veya muavin belgesini yükleyiniz (Zorunludur).');
+                            fileInput?.focus();
+                            return;
                         }
+
+                        const f = fileInput.files[0];
+                        if (f.size > 15 * 1024 * 1024) {
+                            alert('Yüklenen dosya boyutu 15MB sınırını aşamaz.');
+                            return;
+                        }
+
+                        const disputeFileName = f.name;
+                        const disputeFileBase64 = await new Promise((res, rej) => {
+                            const r = new FileReader();
+                            r.onload = () => res(r.result);
+                            r.onerror = rej;
+                            r.readAsDataURL(f);
+                        });
 
                         try {
                             const res = await fetch('/api/mutabakat/public-respond', {
@@ -5824,4 +6148,13 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`Yerel Ağ Adresi: http://${ip.address()}:${PORT}`);
     console.log(`Lokal Adres: http://localhost:${PORT}`);
     console.log(`===========================================`);
+
+    // Cari Mutabakat Otopilot Zamanlayıcısı: 15 dakikada bir kontrol eder
+    setInterval(() => {
+        runReconciliationAutopilot().catch(err => console.error('[Otopilot Periyodik Hata]:', err.message));
+    }, 15 * 60 * 1000);
+    // Sunucu başladıktan 10 saniye sonra ilk otopilot kontrolünü yap
+    setTimeout(() => {
+        runReconciliationAutopilot().catch(err => console.error('[Otopilot Başlangıç Kontrolü Hatası]:', err.message));
+    }, 10000);
 });

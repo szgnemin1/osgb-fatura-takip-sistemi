@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { 
-  CalendarDays, FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
+  CalendarDays, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
-  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet, Archive, Paperclip
+  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet, Archive, Paperclip,
+  Bot, Zap, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import * as XLSX from 'xlsx';
-import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo } from '../types';
+import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo, AutopilotStatus } from '../types';
 
 export const Reconciliation: React.FC = () => {
   const getInitialCutoffDate = () => {
@@ -18,6 +19,12 @@ export const Reconciliation: React.FC = () => {
   const [selectedPeriod, setSelectedPeriod] = useState(getInitialCutoffDate);
   const [quarterSchedules, setQuarterSchedules] = useState<QuarterScheduleInfo[]>([]);
   const [selectedQuarterKey, setSelectedQuarterKey] = useState<'Q1' | 'Q2' | 'Q3' | 'Q4' | null>(null);
+
+  // Otopilot State
+  const [autopilotStatus, setAutopilotStatus] = useState<AutopilotStatus | null>(null);
+  const [isRunningAutopilotCheck, setIsRunningAutopilotCheck] = useState(false);
+  const [showManualTools, setShowManualTools] = useState(false);
+  const [showAutopilotLogsModal, setShowAutopilotLogsModal] = useState(false);
   
   // Şablon Önizleme Modalı
   const [previewStage, setPreviewStage] = useState<ReconciliationStage | null>(null);
@@ -140,6 +147,27 @@ export const Reconciliation: React.FC = () => {
     } catch (_) {}
   };
 
+  const loadAutopilotStatus = async () => {
+    try {
+      const res = await db.getAutopilotStatus();
+      setAutopilotStatus(res);
+    } catch (_) {}
+  };
+
+  const handleRunAutopilotCheck = async () => {
+    try {
+      setIsRunningAutopilotCheck(true);
+      const res = await db.runAutopilotCheckNow(true);
+      await loadAutopilotStatus();
+      await loadData();
+      setSuccessMsg('Otopilot kontrolü başarıyla tamamlandı: ' + (res.message || 'İşlemler güncellendi.'));
+    } catch (e: any) {
+      setErrorMsg('Otopilot kontrol hatası: ' + e.message);
+    } finally {
+      setIsRunningAutopilotCheck(false);
+    }
+  };
+
   const handleSaveManagerPhone = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingManagerPhone(true);
@@ -204,10 +232,12 @@ export const Reconciliation: React.FC = () => {
     loadSmtpConfig();
     loadManagerSettings();
     loadQuarterSchedules();
+    loadAutopilotStatus();
     loadData();
 
-    // Periyodik kontrol: WhatsApp 5s, Mutabakat 7s
+    // Periyodik kontrol: WhatsApp 5s, Mutabakat 7s, Otopilot 10s
     const waInterval = setInterval(loadWhatsAppStatus, 5000);
+    const apInterval = setInterval(loadAutopilotStatus, 10000);
     const dataInterval = setInterval(() => {
       db.getReconciliations(selectedPeriod).then(data => {
         if (data) {
@@ -221,6 +251,7 @@ export const Reconciliation: React.FC = () => {
 
     return () => {
       clearInterval(waInterval);
+      clearInterval(apInterval);
       clearInterval(dataInterval);
     };
   }, [selectedPeriod]);
@@ -555,19 +586,19 @@ export const Reconciliation: React.FC = () => {
   return (
     <div className="space-y-3.5 animate-in fade-in duration-200">
       
-      {/* 1. ÜST BAŞLIK VE KANAL ENTEGRASYON KARTLARI (WHATSAPP + SMTP) */}
+      {/* 1. ÜST BAŞLIK VE KANAL ENTEGRASYON KARTLARI (WHATSAPP + SMTP + YÖNETİCİ) */}
       <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-3 border-b border-slate-800">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-slate-100 flex items-center gap-2.5">
-            <FileCheck className="w-6 h-6 text-emerald-400" /> 
-            Cari Mutabakat & Çoklu Kanal Dağıtım
+            <Bot className="w-6 h-6 text-emerald-400" /> 
+            Cari Mutabakat & Otomatik Otopilot
           </h2>
           <p className="text-slate-400 mt-0.5 text-xs">
-            E-postası olana mail, telefonu olana WhatsApp, ikisi de olana iki kanaldan birden resmi PDF mutabakat mektubu iletin.
+            4 çeyrek dönem yasal takvimine göre ilk gönderim ve 4 aşamalı hatırlatmaları arka planda otomatik yönetir.
           </p>
         </div>
 
-        {/* Entegrasyon Rozetleri (WhatsApp + E-Posta / SMTP) */}
+        {/* Entegrasyon Rozetleri (WhatsApp + E-Posta / SMTP + Yönetici No) */}
         <div className="flex flex-wrap items-center gap-2 self-start xl:self-auto">
           
           {/* WhatsApp Durum Rozeti */}
@@ -680,97 +711,220 @@ export const Reconciliation: React.FC = () => {
         </div>
       )}
 
-      {/* 2. DÖNEM / KESİM TARİHİ SEÇİMİ VE AKSİYON BAR (İNCE & KOMPAKT) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-2.5">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5 shrink-0">
-            <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Bakiye Kesim Tarihi:
-          </span>
-          <input
-            type="date"
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value)}
-            className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-white text-xs font-semibold outline-none focus:border-emerald-500 cursor-pointer"
-          />
-          <button
-            type="button"
-            onClick={handlePrepareList}
-            disabled={isPreparing}
-            className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50 shrink-0"
-            title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
-          >
-            {isPreparing ? <Loader2 className="w-3 h-3 animate-spin text-emerald-400" /> : <RefreshCw className="w-3 h-3 text-emerald-400" />}
-            <span>Bakiyeleri Hesapla</span>
-          </button>
-        </div>
-
-        {/* Aksiyon Butonları */}
-        <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setShowApprovedModal(true)}
-            className="px-3 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
-            title="Tarihten bağımsız mutabık olan firmaların listesini aç"
-          >
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Mutabıklar Listesi ({approvedItems.filter(i => i.is_latest).length})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleExportZip(selectedCutoffDate)}
-            disabled={stats.approved === 0 || isExportingZip}
-            className="px-3 py-1 rounded-lg bg-sky-700/80 hover:bg-sky-600 text-sky-100 border border-sky-500/30 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-40"
-            title="Bu dönemin onaylanan resmi mutabakat PDF mektuplarını tek bir ZIP olarak indir"
-          >
-            {isExportingZip ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5 text-sky-300" />}
-            <span>Onaylı ZIP İndir</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowBatchModal(true)}
-            disabled={isSendingBatch || items.length === 0}
-            className="px-3.5 py-1 rounded-lg bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
-          >
-            {isSendingBatch ? (
-              <>
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Gönderiliyor...</span>
-              </>
-            ) : (
-              <>
-                <Send className="w-3 h-3" />
-                <span>Çoklu Kanal Toplu Gönderim</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      
-      {/* 4 ÇEYREK DÖNEM MUTABAKAT TAKVİMİ VE 4 AŞAMALI YASAL TAKİP ÇUBUĞU */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 shadow-md space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800/80">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-              <CalendarDays className="w-4 h-4" />
+      {/* 2. 🚀 TAM OTOMATİK MUTABAKAT OTOPİLOTU KARTI */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-emerald-950/30 border border-emerald-500/40 rounded-2xl p-4 shadow-lg space-y-3.5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 shadow-inner">
+              <Zap className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
-              <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                <span>Çeyrek Dönem Mutabakat Takvimi</span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-semibold border border-emerald-500/30">
-                  4 Aşamalı Takip Süreci (TTK m. 94)
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm sm:text-base font-extrabold text-white flex items-center gap-2">
+                  <span>Tam Otomatik Cari Mutabakat Otopilotu</span>
+                </h3>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10.5px] font-bold border border-emerald-500/40 animate-pulse">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span>7/24 Aktif & Devrede</span>
                 </span>
-              </h3>
-              <p className="text-[10.5px] text-slate-400">
-                Geriye dönük 7 günlük e-fatura/arşiv payı gözetilerek ayın 8'inde başlar ve 4 aşamada tamamlanır.
+              </div>
+              <p className="text-slate-300 text-[11px] mt-0.5 max-w-3xl leading-relaxed">
+                Tarih seçimi veya manuel gönderim gerekmez. Sistem 4 çeyrek dönem yasal takvimine göre (Nisan, Temmuz, Ekim, Ocak) ilk gönderim ve 4 aşamalı yasal hatırlatmaları otomatik yürütür. Gönderim öncesi bağlantı koparsa Telegram botundan uyarı atar, müşteri yanıtları ise anında yönetici WhatsApp hattına iletilir.
               </p>
             </div>
           </div>
 
+          {/* Otopilot Hızlı Aksiyonları */}
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowApprovedModal(true)}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              title="Tarihten bağımsız mutabık kalınan tüm firmaların detaylı listesini aç"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Mutabıklar ({approvedItems.filter(i => i.is_latest).length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleExportZip()}
+              disabled={approvedItems.length === 0 || isExportingZip}
+              className="px-3 py-1.5 rounded-xl bg-sky-700/80 hover:bg-sky-600 text-sky-100 border border-sky-500/40 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-40"
+              title="Onaylanan resmi mutabakat PDF mektuplarını tek bir ZIP olarak indir"
+            >
+              {isExportingZip ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5 text-sky-300" />}
+              <span>Onaylı ZIP İndir</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleRunAutopilotCheck}
+              disabled={isRunningAutopilotCheck}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              title="Otopilot kontrolünü şimdi çalıştırarak bugüne denk gelen görevleri kontrol et"
+            >
+              {isRunningAutopilotCheck ? <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" /> : <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />}
+              <span>Kontrolü Çalıştır</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowAutopilotLogsModal(true)}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center gap-1"
+              title="Otopilotun yaptığı tüm otomatik işlem günlüklerini gör"
+            >
+              <Clock className="w-3.5 h-3.5 text-slate-400" />
+              <span>Günlükler</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Otopilot Bilgi Şeridi: Sıradaki Görev & Ön Kontrol Durumları */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 pt-1">
+          {/* Sıradaki Otomatik Görev Kartı */}
+          <div className="lg:col-span-7 bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+            <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-800/80">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <CalendarDays className="w-3.5 h-3.5 text-emerald-400" /> Sıradaki Otomatik Görev
+              </span>
+              {autopilotStatus?.nextScheduledEvent && (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold ${autopilotStatus.nextScheduledEvent.isToday ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
+                  {autopilotStatus.nextScheduledEvent.isToday ? '⚡ BUGÜN PLANLI' : `${autopilotStatus.nextScheduledEvent.daysRemaining} Gün Kaldı`}
+                </span>
+              )}
+            </div>
+
+            {autopilotStatus?.nextScheduledEvent ? (
+              <div className="mt-2 space-y-1">
+                <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                  <span className="text-emerald-400">🗓️ {autopilotStatus.nextScheduledEvent.quarterName}</span>
+                  <span className="text-slate-500">•</span>
+                  <span className="text-sky-300 font-semibold">{autopilotStatus.nextScheduledEvent.stageName}</span>
+                </div>
+                <div className="text-[11px] text-slate-300 flex items-center gap-2">
+                  <span>📅 Planlanan Tarih: <b>{formatDateTR(autopilotStatus.nextScheduledEvent.targetDate)}</b></span>
+                  <span>•</span>
+                  <span>⏰ Gönderim Saati: <b>09:30 - 10:00</b></span>
+                </div>
+                <p className="text-[10.5px] text-slate-400 italic mt-1">
+                  💡 {autopilotStatus.nextScheduledEvent.ruleDesc}
+                </p>
+              </div>
+            ) : (
+              <div className="py-3 text-xs text-slate-400">
+                Takvim kontrol ediliyor...
+              </div>
+            )}
+          </div>
+
+          {/* Sistem Ön Kontrol & Kanal Durumları Kartı */}
+          <div className="lg:col-span-5 bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+            <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/80">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldAlert className="w-3.5 h-3.5 text-sky-400" /> Kanal & Ön Kontrol Durumu
+              </span>
+              <span className="text-[9.5px] text-slate-400">Gönderim Öncesi Test</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mt-2 text-[10.5px]">
+              <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800/80">
+                <div className="text-slate-400 text-[10px]">📱 WhatsApp Hattı</div>
+                <div className={`font-bold mt-0.5 flex items-center gap-1 ${waStatus.isConnected ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  <span>{waStatus.isConnected ? '✅ Bağlı' : '❌ Bağlı Değil'}</span>
+                </div>
+              </div>
+
+              <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800/80">
+                <div className="text-slate-400 text-[10px]">✉️ E-Posta (SMTP)</div>
+                <div className={`font-bold mt-0.5 flex items-center gap-1 ${smtpConfig.configured ? 'text-sky-400' : 'text-amber-400'}`}>
+                  <span>{smtpConfig.configured ? '✅ Hazır' : '⚠️ Yapılandırılmadı'}</span>
+                </div>
+              </div>
+
+              <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800/80">
+                <div className="text-slate-400 text-[10px]">🤖 Telegram Uyarı Botu</div>
+                <div className="font-bold text-emerald-400 mt-0.5 flex items-center gap-1">
+                  <span>✅ Devrede (@cnkfaturabot)</span>
+                </div>
+              </div>
+
+              <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800/80">
+                <div className="text-slate-400 text-[10px]">🔔 Yanıt Bildirim Hattı</div>
+                <div className={`font-bold mt-0.5 truncate ${managerPhone ? 'text-amber-300' : 'text-slate-500'}`}>
+                  <span>{managerPhone ? `✅ ${managerPhone}` : '⚠️ Tanımlanmadı'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Manuel Kontrol Aç/Kapat Butonu */}
+        <div className="pt-1 flex items-center justify-between text-xs border-t border-slate-800/60">
+          <div className="text-[10.5px] text-slate-400">
+            Otomasyon aktifken manuel işlem gerekmez. İhtiyaç halinde manuel gönderim ve tarih seçimini açabilirsiniz.
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowManualTools(!showManualTools)}
+            className="text-[11px] font-semibold text-slate-300 hover:text-white flex items-center gap-1 py-1 px-2.5 rounded-lg hover:bg-slate-800 transition-colors"
+          >
+            <span>{showManualTools ? 'Manuel Araçları Gizle' : 'Manuel Araçları & Tarih Seçimini Göster'}</span>
+            {showManualTools ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* 3. MANUEL / İSTEĞE BAĞLI İŞLEM ARAÇLARI (GİZLENEBİLİR) */}
+      {showManualTools && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 space-y-3 animate-in fade-in">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5 shrink-0">
+                <Calendar className="w-3.5 h-3.5 text-emerald-400" /> Manuel Kesim Tarihi:
+              </span>
+              <input
+                type="date"
+                value={selectedPeriod}
+                onChange={(e) => setSelectedPeriod(e.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-white text-xs font-semibold outline-none focus:border-emerald-500 cursor-pointer"
+              />
+              <button
+                type="button"
+                onClick={handlePrepareList}
+                disabled={isPreparing}
+                className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors disabled:opacity-50 shrink-0"
+                title="Seçilen tarihe kadar olan tüm cari hareketleri hesaplar ve listeyi yeniler"
+              >
+                {isPreparing ? <Loader2 className="w-3 h-3 animate-spin text-emerald-400" /> : <RefreshCw className="w-3 h-3 text-emerald-400" />}
+                <span>Bakiyeleri Hesapla</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowBatchModal(true)}
+                disabled={isSendingBatch || items.length === 0}
+                className="px-3.5 py-1 rounded-lg bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-600 hover:opacity-90 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
+              >
+                {isSendingBatch ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Gönderiliyor...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3 h-3" />
+                    <span>Çoklu Kanal Toplu Gönderim</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
           {/* 4 Çeyrek Hızlı Seçim Butonları */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
             {[
               { key: 'Q1', label: '1. Çeyrek', date: '31 Mart', followup: 'Nisan' },
               { key: 'Q2', label: '2. Çeyrek', date: '30 Haziran', followup: 'Temmuz' },
@@ -797,114 +951,114 @@ export const Reconciliation: React.FC = () => {
               );
             })}
           </div>
+
+          {/* Seçili Çeyreğin 4 Aşamalı Yol Haritası */}
+          {(() => {
+            const activeSchedule = quarterSchedules.find(s => s.quarterKey === selectedQuarterKey) || quarterSchedules[2];
+            if (!activeSchedule) return null;
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 pt-1">
+                {activeSchedule.stages.map((st, idx) => {
+                  const stageColors = {
+                    'INITIAL': {
+                      border: 'border-sky-500/30',
+                      bg: 'bg-sky-500/5',
+                      badge: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
+                      btn: 'bg-sky-600 hover:bg-sky-500 text-white',
+                      icon: '📤'
+                    },
+                    'REMINDER_1': {
+                      border: 'border-amber-500/30',
+                      bg: 'bg-amber-500/5',
+                      badge: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+                      btn: 'bg-amber-600 hover:bg-amber-500 text-white',
+                      icon: '🔔'
+                    },
+                    'REMINDER_2': {
+                      border: 'border-orange-500/30',
+                      bg: 'bg-orange-500/5',
+                      badge: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+                      btn: 'bg-orange-600 hover:bg-orange-500 text-white',
+                      icon: '⚠️'
+                    },
+                    'FINAL_NOTICE': {
+                      border: 'border-rose-500/30',
+                      bg: 'bg-rose-500/5',
+                      badge: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
+                      btn: 'bg-rose-600 hover:bg-rose-500 text-white',
+                      icon: '🚨'
+                    }
+                  }[st.stage];
+
+                  return (
+                    <div
+                      key={st.stage}
+                      className={`p-2.5 rounded-xl border ${stageColors.border} ${stageColors.bg} flex flex-col justify-between space-y-2 relative group`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                            Aşama {idx + 1}
+                          </span>
+                          <span className={`text-[9.5px] px-1.5 py-0.2 rounded font-semibold border ${stageColors.badge}`}>
+                            {st.targetDesc}
+                          </span>
+                        </div>
+
+                        <div className="text-xs font-bold text-white mt-1 flex items-center gap-1.5">
+                          <span>{stageColors.icon}</span>
+                          <span>{st.name}</span>
+                        </div>
+
+                        <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+                          {st.ruleDesc}
+                        </p>
+
+                        {st.weekendNote && st.weekendNote.includes('Cumartesi') && (
+                          <div className="mt-1.5 text-[9.5px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                            📌 {st.weekendNote}
+                          </div>
+                        )}
+                        {st.weekendNote && st.weekendNote.includes('Pazar') && (
+                          <div className="mt-1.5 text-[9.5px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                            ⏰ {st.weekendNote}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800/60 flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (st.stage === 'INITIAL') {
+                              setShowBatchModal(true);
+                            } else {
+                              handleBulkRemind(st.stage);
+                            }
+                          }}
+                          className={`flex-1 py-1 px-2 rounded-lg text-[10.5px] font-bold flex items-center justify-center gap-1 transition-colors ${stageColors.btn}`}
+                        >
+                          <span>{st.stage === 'INITIAL' ? 'İlk Gönder' : 'Bu Aşamayı Hatırlat'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openPreviewModal(st.stage)}
+                          className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] border border-slate-700 transition-colors"
+                          title="Bu aşamanın resmi WhatsApp ve E-Posta şablonunu gör"
+                        >
+                          👁️
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
-
-        {/* Seçili Çeyreğin 4 Aşamalı Yol Haritası (Timeline) */}
-        {(() => {
-          const activeSchedule = quarterSchedules.find(s => s.quarterKey === selectedQuarterKey) || quarterSchedules[2];
-          if (!activeSchedule) return null;
-
-          return (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 pt-1">
-              {activeSchedule.stages.map((st, idx) => {
-                const stageColors = {
-                  'INITIAL': {
-                    border: 'border-sky-500/30',
-                    bg: 'bg-sky-500/5',
-                    badge: 'bg-sky-500/20 text-sky-300 border-sky-500/30',
-                    btn: 'bg-sky-600 hover:bg-sky-500 text-white',
-                    icon: '📤'
-                  },
-                  'REMINDER_1': {
-                    border: 'border-amber-500/30',
-                    bg: 'bg-amber-500/5',
-                    badge: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-                    btn: 'bg-amber-600 hover:bg-amber-500 text-white',
-                    icon: '🔔'
-                  },
-                  'REMINDER_2': {
-                    border: 'border-orange-500/30',
-                    bg: 'bg-orange-500/5',
-                    badge: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
-                    btn: 'bg-orange-600 hover:bg-orange-500 text-white',
-                    icon: '⚠️'
-                  },
-                  'FINAL_NOTICE': {
-                    border: 'border-rose-500/30',
-                    bg: 'bg-rose-500/5',
-                    badge: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
-                    btn: 'bg-rose-600 hover:bg-rose-500 text-white',
-                    icon: '🚨'
-                  }
-                }[st.stage];
-
-                return (
-                  <div
-                    key={st.stage}
-                    className={`p-2.5 rounded-xl border ${stageColors.border} ${stageColors.bg} flex flex-col justify-between space-y-2 relative group`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
-                          Aşama {idx + 1}
-                        </span>
-                        <span className={`text-[9.5px] px-1.5 py-0.2 rounded font-semibold border ${stageColors.badge}`}>
-                          {st.targetDesc}
-                        </span>
-                      </div>
-
-                      <div className="text-xs font-bold text-white mt-1 flex items-center gap-1.5">
-                        <span>{stageColors.icon}</span>
-                        <span>{st.name}</span>
-                      </div>
-
-                      <p className="text-[10px] text-slate-400 mt-1 leading-snug">
-                        {st.ruleDesc}
-                      </p>
-
-                      {st.weekendNote && st.weekendNote.includes('Cumartesi') && (
-                        <div className="mt-1.5 text-[9.5px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
-                          📌 {st.weekendNote}
-                        </div>
-                      )}
-                      {st.weekendNote && st.weekendNote.includes('Pazar') && (
-                        <div className="mt-1.5 text-[9.5px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
-                          ⏰ {st.weekendNote}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="pt-2 border-t border-slate-800/60 flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (st.stage === 'INITIAL') {
-                            setShowBatchModal(true);
-                          } else {
-                            handleBulkRemind(st.stage);
-                          }
-                        }}
-                        className={`flex-1 py-1 px-2 rounded-lg text-[10.5px] font-bold flex items-center justify-center gap-1 transition-colors ${stageColors.btn}`}
-                      >
-                        <span>{st.stage === 'INITIAL' ? 'İlk Gönder' : 'Bu Aşamayı Hatırlat'}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => openPreviewModal(st.stage)}
-                        className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10.5px] border border-slate-700 transition-colors"
-                        title="Bu aşamanın resmi WhatsApp ve E-Posta şablonunu gör"
-                      >
-                        👁️
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-      </div>
+      )}
 
       {/* 3. KPI İSTATİSTİK KARTLARI (TIKLANABİLİR FİLTRE & BEKLEYENLER MODALI) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
@@ -2353,6 +2507,64 @@ export const Reconciliation: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setPreviewStage(null)}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OTOPİLOT GÜNLÜKLERİ MODALI */}
+      {showAutopilotLogsModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">Otopilot Otomasyon Günlükleri</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAutopilotLogsModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 space-y-2 text-xs">
+              {!autopilotStatus?.recentLogs || autopilotStatus.recentLogs.length === 0 ? (
+                <div className="text-center py-8 text-slate-400">Henüz kaydedilmiş bir otomasyon işlemi bulunmuyor.</div>
+              ) : (
+                autopilotStatus.recentLogs.map(log => (
+                  <div key={log.id} className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${log.status === 'SUCCESS' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : log.status === 'WARNING_CONNECTION' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'}`}>
+                          {log.status === 'SUCCESS' ? 'BAŞARILI' : log.status === 'WARNING_CONNECTION' ? 'BAĞLANTI UYARISI' : 'HATA'}
+                        </span>
+                        <span className="font-bold text-white">{log.stage_name || log.stage}</span>
+                        <span className="text-slate-400">({log.period})</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        {log.details || `Gönderilen: ${log.sent_count} Firma`}
+                      </div>
+                    </div>
+                    <div className="text-right text-[10.5px] text-slate-400 shrink-0">
+                      <div>{new Date(log.executed_at).toLocaleDateString('tr-TR')}</div>
+                      <div>{new Date(log.executed_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-3 px-4 border-t border-slate-800 bg-slate-950/50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowAutopilotLogsModal(false)}
                 className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
               >
                 Kapat

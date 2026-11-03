@@ -277,4 +277,49 @@ export interface WhatsAppStatus {
   name?: string;
 }
 
+export interface AutopilotStatus {
+  autopilotActive: boolean;
+  today: string;
+  connections: {
+    whatsapp: {
+      connected: boolean;
+      phoneNumber?: string | null;
+    };
+    smtp: {
+      configured: boolean;
+      host?: string | null;
+      user?: string | null;
+    };
+    telegram: {
+      configured: boolean;
+      botUsername?: string | null;
+      allowedUsersCount: number;
+    };
+    managerPhone?: string | null;
+  };
+  nextScheduledEvent?: {
+    quarterKey: 'Q1' | 'Q2' | 'Q3' | 'Q4';
+    quarterName: string;
+    cutoffDate: string;
+    stage: ReconciliationStage;
+    stageName: string;
+    targetDate: string;
+    daysRemaining: number;
+    isToday: boolean;
+    ruleDesc: string;
+  } | null;
+  recentLogs: Array<{
+    id: number;
+    trigger_key: string;
+    period: string;
+    stage: string;
+    stage_name?: string;
+    target_date: string;
+    executed_at: string;
+    status: 'SUCCESS' | 'WARNING_CONNECTION' | 'ERROR';
+    sent_count: number;
+    details?: string;
+  }>;
+}
+
 

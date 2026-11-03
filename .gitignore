@@ -9,6 +9,7 @@ node_modules/
 /dist-ssr
 
 # Databases & Sensitive Data
+*.sqlite*
 /db/*.sqlite*
 /db/*.json
 /db/backups/

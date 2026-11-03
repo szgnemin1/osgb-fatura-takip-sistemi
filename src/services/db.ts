@@ -1,5 +1,5 @@
 
-import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo } from '../types';
+import { Firm, Transaction, TransactionType, PreparationItem, InvoiceType, GlobalSettings, PricingTier, ExpenseCategory, Expense, AppUser, TelegramConfig, TelegramAllowedUser, ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats, ReconciliationStage, QuarterScheduleInfo, AutopilotStatus } from '../types';
 
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
@@ -1002,6 +1002,24 @@ export const db = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Test bildirimi gönderilemedi.');
+    return data;
+  },
+
+  getAutopilotStatus: async (): Promise<AutopilotStatus> => {
+    const res = await fetchWithAuth('/api/reconciliation/autopilot-status');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Otopilot durumu alınamadı.');
+    return data;
+  },
+
+  runAutopilotCheckNow: async (force: boolean = false): Promise<{ success: boolean; message?: string; results?: any }> => {
+    const res = await fetchWithAuth('/api/reconciliation/autopilot-run-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Otopilot kontrolü çalıştırılamadı.');
     return data;
   }
 };
