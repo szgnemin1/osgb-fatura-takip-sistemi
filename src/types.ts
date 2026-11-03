@@ -217,6 +217,8 @@ export interface ReconciliationItem {
   client_ip?: string;
   created_at: string;
   updated_at?: string;
+  current_balance?: number;
+  is_latest?: boolean;
 }
 
 export interface ReconciliationStats {
@@ -226,6 +228,7 @@ export interface ReconciliationStats {
   disputed: number;
   pending: number;
   allPendingCount?: number;
+  allApprovedCount?: number;
   hasPhone: number;
   hasEmail: number;
   hasBoth: number;

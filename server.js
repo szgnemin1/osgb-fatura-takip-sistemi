@@ -4326,10 +4326,46 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
         );
         const pendingItems = pendingRows.map(mapRecRow);
 
+        // 3. Tarihten bağımsız, müşteri tarafından onaylanmış (Mutabık) kayıtlar (status = 'APPROVED')
+        const approvedRows = await db.all(
+            `SELECT r.*, f.data as firm_data 
+             FROM reconciliations r 
+             LEFT JOIN firms f ON r.firm_id = f.id 
+             WHERE r.status = 'APPROVED' 
+             ORDER BY r.response_at DESC, r.period DESC`
+        );
+
+        // Tüm hareketlerden firmaların gerçek güncel (anlık) bakiyesini hesapla
+        const allTransRows = await db.all("SELECT data FROM transactions");
+        const currentFirmBalances = {};
+        for (const trRow of allTransRows) {
+            try {
+                const t = JSON.parse(trRow.data);
+                if (t.status && t.status !== 'APPROVED') continue;
+                const fid = String(t.firmId);
+                if (currentFirmBalances[fid] === undefined) currentFirmBalances[fid] = 0;
+                const debt = (t.type === 'FATURA' || t.type === 'INVOICE') ? (Number(t.debt) || 0) : 0;
+                const credit = Number(t.credit) || 0;
+                currentFirmBalances[fid] += (debt - credit);
+            } catch (_) {}
+        }
+
+        const seenApprovedFirms = new Set();
+        const approvedItems = [];
+        for (const r of approvedRows) {
+            const item = mapRecRow(r);
+            const fid = String(r.firm_id);
+            item.current_balance = currentFirmBalances[fid] !== undefined ? currentFirmBalances[fid] : item.balance;
+            item.is_latest = !seenApprovedFirms.has(fid);
+            seenApprovedFirms.add(fid);
+            approvedItems.push(item);
+        }
+
         const stats = {
             total: items.length,
             sent: items.filter(i => i.status !== 'PENDING_SEND').length,
             approved: items.filter(i => i.status === 'APPROVED').length,
+            allApprovedCount: approvedItems.filter(i => i.is_latest).length,
             disputed: items.filter(i => i.status === 'DISPUTED').length,
             pending: items.filter(i => i.status === 'SENT').length,
             allPendingCount: pendingItems.length,
@@ -4339,7 +4375,7 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
             missingContact: items.filter(i => (!i.phone || i.phone.trim().length < 10) && (!i.email || !i.email.includes('@'))).length
         };
 
-        res.json({ items, stats, pendingItems });
+        res.json({ items, stats, pendingItems, approvedItems });
     } catch (e) {
         console.error('Mutabakat veri hatası:', e);
         res.status(500).json({ error: 'Mutabakat verileri alınamadı: ' + e.message });

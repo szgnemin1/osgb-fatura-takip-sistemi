@@ -3,9 +3,10 @@ import { db } from '../services/db';
 import { 
   FileCheck, QrCode, Smartphone, RefreshCw, Send, CheckCircle2, AlertCircle, 
   AlertTriangle, Clock, X, Check, Copy, Download, Search, 
-  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell
+  Loader2, Phone, Power, Edit2, ShieldAlert, Mail, Settings, AtSign, Calendar, Bell, FileSpreadsheet
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import * as XLSX from 'xlsx';
 import { ReconciliationItem, WhatsAppStatus, SmtpConfig, ReconciliationStats } from '../types';
 
 export const Reconciliation: React.FC = () => {
@@ -17,6 +18,10 @@ export const Reconciliation: React.FC = () => {
   const [selectedPeriod, setSelectedPeriod] = useState(getInitialCutoffDate);
   const [items, setItems] = useState<ReconciliationItem[]>([]);
   const [pendingItems, setPendingItems] = useState<ReconciliationItem[]>([]);
+  const [approvedItems, setApprovedItems] = useState<ReconciliationItem[]>([]);
+  const [showApprovedModal, setShowApprovedModal] = useState(false);
+  const [approvedSearchTerm, setApprovedSearchTerm] = useState('');
+  const [showOnlyLatestApproved, setShowOnlyLatestApproved] = useState(true);
   const [stats, setStats] = useState<ReconciliationStats>({
     total: 0,
     sent: 0,
@@ -153,6 +158,7 @@ export const Reconciliation: React.FC = () => {
       const data = await db.getReconciliations(selectedPeriod);
       setItems(data.items || []);
       setPendingItems(data.pendingItems || []);
+      setApprovedItems(data.approvedItems || []);
       setStats(data.stats || {
         total: 0,
         sent: 0,
@@ -186,6 +192,7 @@ export const Reconciliation: React.FC = () => {
         if (data) {
           if (data.items) setItems(data.items);
           if (data.pendingItems) setPendingItems(data.pendingItems);
+          if (data.approvedItems) setApprovedItems(data.approvedItems);
           if (data.stats) setStats(data.stats);
         }
       }).catch(() => {});
@@ -362,6 +369,46 @@ export const Reconciliation: React.FC = () => {
     return item.status === statusFilter;
   });
 
+  // Mutabıklar Modalı İçin Filtrelenmiş Liste
+  const filteredApproved = approvedItems.filter(item => {
+    if (showOnlyLatestApproved && !item.is_latest) return false;
+    if (!approvedSearchTerm.trim()) return true;
+    const term = approvedSearchTerm.toLowerCase();
+    return (
+      (item.firm_name && item.firm_name.toLowerCase().includes(term)) ||
+      (item.phone && item.phone.includes(term)) ||
+      (item.email && item.email.toLowerCase().includes(term)) ||
+      (item.responder_name && item.responder_name.toLowerCase().includes(term))
+    );
+  });
+
+  const handleExportApprovedToExcel = () => {
+    if (filteredApproved.length === 0) return;
+    const exportData = filteredApproved.map((item, idx) => {
+      const recBal = Number(item.balance) || 0;
+      const currBal = Number(item.current_balance !== undefined ? item.current_balance : item.balance) || 0;
+      const diff = currBal - recBal;
+      return {
+        'Sıra': idx + 1,
+        'Firma Adı': item.firm_name,
+        'Telefon': item.phone || '',
+        'E-Posta': item.email || '',
+        'Son Mutabakat Dönemi': item.period,
+        'Müşteri Onay Zamanı': item.response_at ? new Date(item.response_at).toLocaleString('tr-TR') : '',
+        'O Sıra Olan Bakiye (TL)': recBal,
+        'Anlık Güncel Bakiye (TL)': currBal,
+        'Bakiye Değişimi (TL)': diff,
+        'Durum': Math.abs(diff) < 0.01 ? 'Bakiye Denk (Değişmedi)' : diff > 0 ? 'Borç Arttı (+)' : 'Ödeme/Alacak Arttı (-)',
+        'Onaylayan Yetkili': item.responder_name ? `${item.responder_name} (${item.responder_title || 'Yetkili'})` : '',
+        'Onay IP': item.client_ip || ''
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Mutabık Firmalar");
+    XLSX.writeFile(wb, `Mutabik_Firmalar_Listesi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   return (
     <div className="space-y-3.5 animate-in fade-in duration-200">
       
@@ -514,8 +561,18 @@ export const Reconciliation: React.FC = () => {
           </button>
         </div>
 
-        {/* Toplu Gönderim Butonu */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Aksiyon Butonları */}
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setShowApprovedModal(true)}
+            className="px-3 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+            title="Tarihten bağımsız mutabık olan firmaların listesini aç"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Mutabıklar Listesi ({approvedItems.filter(i => i.is_latest).length})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowBatchModal(true)}
@@ -568,15 +625,21 @@ export const Reconciliation: React.FC = () => {
           <div className="text-base sm:text-lg font-bold text-purple-300 mt-0.5">{stats.sent}</div>
         </div>
 
+        {/* MUTABIK KARTI: Tıklanınca Tarihten Bağımsız Mutabıklar Modalı Açılır */}
         <div 
-          onClick={() => setStatusFilter('APPROVED')}
-          className={`p-2.5 rounded-xl border cursor-pointer transition-all ${statusFilter === 'APPROVED' ? 'bg-emerald-950/40 border-emerald-600 shadow-md ring-1 ring-emerald-500/30' : 'bg-slate-900 border-slate-800 hover:border-emerald-700/50'}`}
-          title="Mutabık olanları filtrelemek için tıklayın"
+          onClick={() => setShowApprovedModal(true)}
+          className="bg-slate-900 border border-emerald-500/40 hover:border-emerald-400 hover:bg-emerald-950/20 p-2.5 rounded-xl cursor-pointer transition-all shadow-sm group relative"
+          title="Tarihten bağımsız mutabık kalınan firmaların detaylı listesini açmak için tıklayın"
         >
-          <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-            <CheckCircle2 className="w-3 h-3" /> Mutabık
+          <div className="text-[10px] text-emerald-400 font-medium flex items-center justify-between gap-1">
+            <span className="flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Mutabık
+            </span>
+            <span className="text-[9px] text-emerald-300/60 group-hover:text-emerald-300 font-semibold transition-colors">Listele ↗</span>
           </div>
-          <div className="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">{stats.approved}</div>
+          <div className="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">
+            {approvedItems.filter(i => i.is_latest).length}
+          </div>
         </div>
 
         <div 
@@ -1532,6 +1595,222 @@ export const Reconciliation: React.FC = () => {
         </div>
       )}
 
+
+      {/* 12. MUTABIK OLANLAR MODALI (TARİHTEN BAĞIMSIZ - EN SON MUTABAKATLAR & ANLIK BAKİYELER) */}
+      {showApprovedModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-5xl w-full max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-3.5 px-4 border-b border-slate-800 bg-slate-950/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">Mutabık Kalınan Firmalar Listesi</h3>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10.5px] font-extrabold border border-emerald-500/30">
+                      {filteredApproved.length} Firma
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-400 mt-0.5">
+                    Tarih seçiminden bağımsız; mutabık kalınan andaki bakiye ile güncel (anlık) bakiye karşılaştırması
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowApprovedModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Filter & Controls Bar */}
+            <div className="p-3 px-4 bg-slate-950/40 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="relative flex-1 sm:max-w-xs">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={approvedSearchTerm}
+                  onChange={(e) => setApprovedSearchTerm(e.target.value)}
+                  placeholder="Firma, yetkili veya telefon ara..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-8 pr-2.5 py-1 text-xs text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showOnlyLatestApproved}
+                    onChange={(e) => setShowOnlyLatestApproved(e.target.checked)}
+                    className="rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 bg-slate-900 cursor-pointer"
+                  />
+                  <span>Sadece En Son Mutabakatı Göster</span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={handleExportApprovedToExcel}
+                  disabled={filteredApproved.length === 0}
+                  className="px-3 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                  title="Listeyi Excel formatında indir"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel İndir</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body: Table */}
+            <div className="p-3 sm:p-4 overflow-y-auto flex-1">
+              {filteredApproved.length === 0 ? (
+                <div className="text-center py-8 text-slate-500 text-xs bg-slate-950/40 rounded-xl border border-slate-800/80">
+                  <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+                  <span className="text-slate-300 font-medium text-sm">Mutabık kalınmış firma kaydı bulunamadı.</span>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 text-slate-400 font-semibold border-b border-slate-800 text-[11px]">
+                      <tr>
+                        <th className="py-2 px-3">Firma Adı & İletişim</th>
+                        <th className="py-2 px-3">Son Mutabakat Tarihi</th>
+                        <th className="py-2 px-3 text-right">O Sıra Olan Bakiye</th>
+                        <th className="py-2 px-3 text-right">Anlık Güncel Bakiye</th>
+                        <th className="py-2 px-3 text-center">Bakiye Değişimi</th>
+                        <th className="py-2 px-3">Onaylayan Yetkili</th>
+                        <th className="py-2 px-3 text-right">İşlemler</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50 bg-slate-950/40">
+                      {filteredApproved.map((item) => {
+                        const recBal = Number(item.balance) || 0;
+                        const currBal = Number(item.current_balance !== undefined ? item.current_balance : item.balance) || 0;
+                        const diff = currBal - recBal;
+
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                            {/* Firma Adı & İletişim */}
+                            <td className="py-2 px-3">
+                              <div className="font-semibold text-white text-xs">{item.firm_name}</div>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400">
+                                {item.phone && <span>📱 {item.phone}</span>}
+                                {item.email && <span>✉️ {item.email}</span>}
+                              </div>
+                            </td>
+
+                            {/* Son Mutabakat Tarihi */}
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <div className="font-mono text-xs text-slate-200">
+                                🗓️ {formatDateTR(item.period)}
+                              </div>
+                              {item.response_at && (
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  Onay: {new Date(item.response_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* O Sıra Olan Bakiye */}
+                            <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap">
+                              {recBal > 0 ? (
+                                <span className="text-rose-400">{recBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Borç)</span></span>
+                              ) : recBal < 0 ? (
+                                <span className="text-emerald-400">{Math.abs(recBal).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Alacak)</span></span>
+                              ) : (
+                                <span className="text-slate-400">0.00 TL (Denk)</span>
+                              )}
+                            </td>
+
+                            {/* Anlık Güncel Bakiye */}
+                            <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap">
+                              {currBal > 0 ? (
+                                <span className="text-rose-400">{currBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Borç)</span></span>
+                              ) : currBal < 0 ? (
+                                <span className="text-emerald-400">{Math.abs(currBal).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[10px] font-normal">(Alacak)</span></span>
+                              ) : (
+                                <span className="text-slate-400">0.00 TL (Denk)</span>
+                              )}
+                            </td>
+
+                            {/* Bakiye Değişimi */}
+                            <td className="py-2 px-3 text-center whitespace-nowrap">
+                              {Math.abs(diff) < 0.01 ? (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                                  <Check className="w-3 h-3" /> Denk (Değişmedi)
+                                </span>
+                              ) : diff > 0 ? (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] font-bold" title="Mutabakattan sonra yeni fatura veya borç eklendi">
+                                  +{diff.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-bold" title="Mutabakattan sonra tahsilat/ödeme yapıldı">
+                                  {diff.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Onaylayan Yetkili */}
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <div className="font-semibold text-slate-200 text-xs">
+                                👤 {item.responder_name || 'Yetkili'}
+                              </div>
+                              {item.responder_title && (
+                                <div className="text-[10px] text-slate-400">
+                                  {item.responder_title}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* İşlemler */}
+                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={() => handleCopyLink(item.token)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="Onay Linkini Kopyala"
+                                >
+                                  {copiedToken === item.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                                <a
+                                  href={`/mutabakat/${item.token}/pdf`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="Onaylı Mutabakat Mektubunu İndir / Önizle"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 px-4 border-t border-slate-800 bg-slate-950/40 flex items-center justify-between">
+              <span className="text-xs text-slate-400">
+                Toplam <b>{filteredApproved.length}</b> mutabık firma listeleniyor.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowApprovedModal(false)}
+                className="px-4 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
