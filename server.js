@@ -3422,22 +3422,23 @@ function getBaseUrl(req) {
 
 function buildReconciliationCaption(firm, rec, approvalUrl) {
     const balanceNum = Number(rec.balance) || 0;
-    let bakiyeStr = "0.00 TL (HESABIMIZ DENK)";
-    if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇ`;
-    else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAK`;
+    let bakiyeStr = "0.00 TL (HESABIMIZ DENKTİR)";
+    if (balanceNum > 0) bakiyeStr = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL BORÇLU`;
+    else if (balanceNum < 0) bakiyeStr = `${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL ALACAKLI`;
 
     return (
         `Sayın Yetkili (*${firm.name}*),\n\n` +
-        `*${rec.period}* dönemi itibariyle şirketimiz nezdindeki cari hesap bakiyeniz:\n` +
-        `👉 *${bakiyeStr}* olarak yer almaktadır.\n\n` +
-        `Detaylı cari hesap ekstresi ve resmi mutabakat mektubunuz ekte PDF olarak sunulmuştur.\n\n` +
+        `6102 sayılı TTK m. 94 ve 213 sayılı Vergi Usul Kanunu hükümleri uyarınca, *${rec.period}* dönemi sonu itibarıyla şirketimiz yasal muhasebe kayıtlarındaki cari hesap bakiyeniz:\n` +
+        `👉 *${bakiyeStr}* olarak tespit edilmiştir.\n\n` +
+        `Resmi mutabakat mektubunuz ve ayrıntılı hesap dökümünüz ekteki PDF belgesinde yer almaktadır.\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🛡️ *RESMİ CARİ MUTABAKAT ONAYI*\n` +
+        `⚖️ *RESMİ CARİ HESAP MUTABAKATI*\n` +
         `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `Cari hesap kayıtlarımızı incelemek ve ad, soyad ve görev bilgilerinizi girerek mutabakatı onaylamak veya fark bildirmek için lütfen aşağıdaki bağlantıya tıklayınız:\n\n` +
-        `🌐 *Onay Bağlantısı:*\n` +
+        `Yasal muhasebe kayıtlarımızı inceleyerek mutabakatı onaylamak veya varsa itiraz/fark bildiriminizi iletmek için lütfen aşağıdaki güvenli bağlantıyı kullanınız:\n\n` +
+        `🌐 *Resmi Onay Bağlantısı:*\n` +
         `${approvalUrl}\n\n` +
-        `Saygılarımızla,\n*OSGB Finans & Muhasebe Yönetimi*`
+        `📌 *Hukuki Bildirim (TTK m. 94):* Tebliğ tarihinden itibaren yasal süre (1 ay) içinde itiraz edilmeyen cari hesap bakiyeleri yasal olarak kesinleşmiş sayılır.\n\n` +
+        `Saygılarımızla,\n*Finans & Muhasebe Yönetimi*`
     );
 }
 
@@ -3446,42 +3447,55 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
     const doc = new jsPDF();
 
     // Resmi Başlık
-    doc.setFontSize(16);
+    doc.setFontSize(15);
     doc.setTextColor(30, 64, 175);
-    doc.text("CARI HESAP MUTABAKAT MEKTUBU", 105, 18, { align: "center" });
+    doc.setFont("helvetica", "bold");
+    doc.text("CARI HESAP MUTABAKAT MEKTUBU", 105, 17, { align: "center" });
 
-    doc.setFontSize(8.5);
+    doc.setFontSize(7.8);
     doc.setTextColor(100, 116, 139);
-    doc.text("T.C. KANUNLARI VE VERGI USUL KANUNU GEREGI DONEMSEL HESAP MUTABAKATI", 105, 24, { align: "center" });
+    doc.setFont("helvetica", "normal");
+    doc.text("6102 SAYILI TURK TICARET KANUNU (MD. 94) VE 213 SAYILI VERGI USUL KANUNU GEREGINCE", 105, 22.5, { align: "center" });
 
     doc.setDrawColor(203, 213, 225);
-    doc.line(14, 28, 196, 28);
+    doc.line(14, 26, 196, 26);
 
-    let currentY = 35;
+    let currentY = 33;
 
     // Sağ Üst: Tarih ve Dönem Bilgisi
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
     doc.text(`Tarih: ${new Date().toLocaleDateString('tr-TR')}`, 196, currentY, { align: 'right' });
-    doc.text(`Donem: ${replaceTR(period || '-')}`, 196, currentY + 5, { align: 'right' });
+    doc.text(`Mutabakat Donemi: ${replaceTR(period || '-')}`, 196, currentY + 5, { align: 'right' });
 
-    // Sol Üst: Sayın Yetkili ve Firma Adı (Genişliği sınırlanarak sağ taraftaki Tarih ile çakışması önlenir)
+    // Sol Üst: Sayın Yetkili ve Firma Adı
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9.5);
     doc.setTextColor(30, 41, 59);
     doc.text("Sayin Yetkili,", 14, currentY);
 
-    currentY += 5.5;
+    currentY += 5;
     const firmName = replaceTR(firm.name || 'Firma');
     const firmNameLines = doc.splitTextToSize(firmName, 120);
     doc.text(firmNameLines, 14, currentY);
 
-    // Firma adının satır sayısına göre dinamik alt boşluk
-    currentY += (firmNameLines.length * 4.5) + 5;
+    currentY += (firmNameLines.length * 4.5);
+
+    // VKN / TCKN Bilgisi (varsa)
+    const taxNum = firm.taxNumber || firm.tax_no || firm.taxNo;
+    if (taxNum) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`VKN / TCKN: ${replaceTR(taxNum)}`, 14, currentY + 1);
+        currentY += 5;
+    } else {
+        currentY += 3;
+    }
 
     const balanceNum = Number(balance) || 0;
-    let bakiyeMetni = "0.00 TL ile HESABIMIZ DENK";
+    let bakiyeMetni = "0.00 TL ile HESABIMIZ DENKTIR";
     if (balanceNum > 0) {
         bakiyeMetni = `${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL SIRKETIMIZE BORCLU`;
     } else if (balanceNum < 0) {
@@ -3489,48 +3503,49 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
     }
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(8.5);
     doc.setTextColor(51, 65, 85);
 
-    const p1 = `Sirketimiz nezdindeki cari hesap kayitlarimiza gore, yukarida belirtilen donem sonu itibariyle firmanizin hesabinda ${bakiyeMetni} bakiye bulunmaktadir.`;
+    const p1 = `6102 sayili Turk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayili Vergi Usul Kanunu (VUK) hukumleri geregince, sirketimiz nezdindeki yasal muhasebe kayitlarimiza gore ${replaceTR(period || '')} donem sonu itibariyla firmanizin cari hesap bakiyesi ${bakiyeMetni} olarak gorulmektedir.`;
     const linesP1 = doc.splitTextToSize(p1, 182);
     doc.text(linesP1, 14, currentY);
-    currentY += (linesP1.length * 4.5) + 3;
+    currentY += (linesP1.length * 4.2) + 2.5;
 
-    const p2 = `Kayitlarinizin tetkik edilerek tarafimiza mutabakat durumunuzun bildirilmesini rica ederiz. Hesap ekstreniz asagida ozetlenmistir:`;
+    const p2 = `Kayitlarinizin tetkik edilerek mutabakat durumunuzun bildirilmesini rica ederiz. Soz konusu doneme ait ayrintili fatura ve tahsilat hareketleriniz asagidaki cetvelde ozetlenmistir:`;
     const linesP2 = doc.splitTextToSize(p2, 182);
     doc.text(linesP2, 14, currentY);
-    currentY += (linesP2.length * 4.5) + 5;
+    currentY += (linesP2.length * 4.2) + 4;
 
     // Finansal Özet Kutusu
     const boxY = currentY;
-    const boxHeight = 18;
+    const boxHeight = 17;
     doc.setFillColor(248, 250, 252);
     doc.setDrawColor(203, 213, 225);
     doc.roundedRect(14, boxY, 182, boxHeight, 2, 2, 'FD');
 
-    doc.setFontSize(8.5);
+    doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(71, 85, 105);
-    doc.text("Toplam Fatura (Borc):", 20, boxY + 6.5);
-    doc.text("Toplam Odenen (Alacak):", 80, boxY + 6.5);
-    doc.text("MUTABAKAT BAKIYESI:", 140, boxY + 6.5);
+    doc.text("Toplam Fatura (Borc):", 20, boxY + 6);
+    doc.text("Toplam Odenen (Alacak):", 80, boxY + 6);
+    doc.text("MUTABAKAT BAKIYESI:", 140, boxY + 6);
 
     doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
     doc.setTextColor(30, 41, 59);
-    doc.text(`${(totalBilled || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 20, boxY + 13);
-    doc.text(`${(totalPaid || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 80, boxY + 13);
+    doc.text(`${(totalBilled || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 20, boxY + 12.5);
+    doc.text(`${(totalPaid || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL`, 80, boxY + 12.5);
 
     doc.setFont("helvetica", "bold");
     if (balanceNum > 0) {
         doc.setTextColor(220, 38, 38);
-        doc.text(`${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 140, boxY + 13);
+        doc.text(`${balanceNum.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Borclu)`, 140, boxY + 12.5);
     } else if (balanceNum < 0) {
         doc.setTextColor(16, 185, 129);
-        doc.text(`${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 140, boxY + 13);
+        doc.text(`${Math.abs(balanceNum).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL (Alacakli)`, 140, boxY + 12.5);
     } else {
         doc.setTextColor(71, 85, 105);
-        doc.text("0.00 TL (Denk)", 140, boxY + 13);
+        doc.text("0.00 TL (Denk)", 140, boxY + 12.5);
     }
 
     doc.setTextColor(0, 0, 0);
@@ -3555,7 +3570,7 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
         ];
     });
 
-    const startTableY = boxY + boxHeight + 7;
+    const startTableY = boxY + boxHeight + 6;
 
     doc.autoTable({
         startY: startTableY,
@@ -3563,8 +3578,8 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
         body: rows.length > 0 ? rows : [['-', '-', 'Bu donemde kayitli hareket bulunmamaktadir.', '-', '-']],
         styles: { 
             font: 'helvetica', 
-            fontSize: 8, 
-            cellPadding: 3,
+            fontSize: 7.5, 
+            cellPadding: 2.8,
             overflow: 'linebreak',
             lineColor: [226, 232, 240],
             lineWidth: 0.2
@@ -3584,21 +3599,45 @@ function generateReconciliationPDF(firm, period, balance, totalBilled, totalPaid
             4: { cellWidth: 32, halign: 'right' }
         },
         theme: 'grid',
-        margin: { top: 15, bottom: 20, left: 14, right: 14 },
+        margin: { top: 15, bottom: 26, left: 14, right: 14 },
         pageBreak: 'auto'
     });
+
+    // YASAL BILDIRIM & HUKUKI ITIRAZ SERHI KUTUSU (TTK 94 & VUK)
+    const finalY = doc.lastAutoTable?.finalY || 180;
+    let noteY = finalY + 5;
+    if (noteY > 250) {
+        doc.addPage();
+        noteY = 16;
+    }
+
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(14, noteY, 182, 17, 1.5, 1.5, 'FD');
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(7.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text("YASAL ITIRAZ VE TEBLIG SERHI (6102 S. TTK MD. 94):", 18, noteY + 5);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.8);
+    doc.setTextColor(100, 116, 139);
+    const legalText = "Isbu cari hesap mutabakat mektubunun tebliginden itibaren 1 (bir) ay icerisinde Turk Ticaret Kanunu hukumlerine uygun sekilde yazili veya guvenli elektronik yollarla herhangi bir itiraz bildirilmemesi halinde, kayitlarimizdaki bakiye uzerinde mutabik kalindigi kabul edilir. Elektronik onay veya fark bildirimleri sistemimizce zaman damgasi ve IP bilgisiyle resmi tevsik edici kayit olarak saklanmaktadir.";
+    const legalLines = doc.splitTextToSize(legalText, 174);
+    doc.text(legalLines, 18, noteY + 9);
 
     // Sayfa Numarası & Alt Bilgi
     const pageCount = doc.internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
         doc.setPage(i);
-        doc.setFontSize(7.5);
+        doc.setFontSize(7);
         doc.setFont("helvetica", "normal");
         doc.setTextColor(148, 163, 184);
         doc.text(
-            `OSGB ProFinans - Resmi Cari Mutabakat Mektubu - Sayfa ${i} / ${pageCount}`, 
+            `OSGB Finans & Muhasebe Yonetimi - Resmi Cari Mutabakat Mektubu - Sayfa ${i} / ${pageCount}`, 
             doc.internal.pageSize.width / 2, 
-            doc.internal.pageSize.height - 8, 
+            doc.internal.pageSize.height - 6, 
             { align: 'center' }
         );
     }
@@ -3746,16 +3785,16 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
                     <p style="font-size: 15px; color: #1e293b; margin: 0 0 16px; font-weight: 700;">
                         Sayın Yetkili (<strong>${escapeHtml(firm.name || 'Değerli Müşterimiz')}</strong>),
                     </p>
-                    <p style="font-size: 14px; line-height: 1.6; color: #475569; margin: 0 0 24px;">
-                        Şirketimiz nezdindeki muhasebe ve cari hesap kayıtlarımıza göre <strong>${escapeHtml(rec.period)}</strong> dönemi sonu itibariyle bakiyeniz aşağıda ve ekteki resmi onaylı PDF ekstre belgesinde yer almaktadır:
+                    <p style="font-size: 13.5px; line-height: 1.6; color: #475569; margin: 0 0 20px;">
+                        6102 sayılı Türk Ticaret Kanunu'nun (TTK) 94. maddesi ve 213 sayılı Vergi Usul Kanunu (VUK) hükümleri uyarınca, şirketimiz yasal muhasebe kayıtlarına göre <strong>${escapeHtml(rec.period)}</strong> dönemi sonu itibarıyla firmanız cari hesap bakiyesi aşağıda ve ekteki resmi hesap özetinde yer almaktadır:
                     </p>
 
                     <!-- Finansal Kart -->
-                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: ${statusBg}; border: 1px solid ${statusColor}40; border-radius: 12px; margin-bottom: 26px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: ${statusBg}; border: 1px solid ${statusColor}40; border-radius: 12px; margin-bottom: 24px;">
                         <tr>
                             <td style="padding: 22px; text-align: center;">
                                 <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">
-                                    KAYITLARIMIZDAKİ BAKİYE
+                                    YASAL KAYITLARIMIZDAKİ BAKİYE
                                 </div>
                                 <div style="font-size: 32px; font-weight: 800; color: ${statusColor}; font-family: 'Courier New', monospace; letter-spacing: -1px; margin-bottom: 4px;">
                                     ${balanceFormatted} TL
@@ -3767,16 +3806,16 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
                         </tr>
                     </table>
 
-                    <p style="font-size: 13.5px; line-height: 1.5; color: #475569; margin: 0 0 20px; text-align: center;">
-                        Lütfen muhasebe kayıtlarınızı inceleyerek aşağıdaki seçeneklerden birini tıklayarak durumunuzu bildiriniz:
+                    <p style="font-size: 13px; line-height: 1.5; color: #475569; margin: 0 0 18px; text-align: center;">
+                        Muhasebe kayıtlarınızı tetkik ederek mutabakat durumunuzu aşağıdaki butonlardan biriyle resmi olarak onaylamanızı veya varsa itirazınızı bildirmenizi rica ederiz:
                     </p>
 
                     <!-- Aksiyon Butonları -->
-                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 22px;">
                         <tr>
                             <td align="center" style="padding-bottom: 12px;">
                                 <a href="${approveLink}" target="_blank" style="display: block; width: 85%; background-color: #10b981; color: #ffffff; text-decoration: none; padding: 14px 20px; border-radius: 10px; font-weight: 700; font-size: 14px; text-align: center; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);">
-                                    ✅ Kayıtlarımız Mutabıktır (Onayla)
+                                    ✅ Kayıtlarımız Mutabıktır (Resmi Onay)
                                 </a>
                             </td>
                         </tr>
@@ -3796,8 +3835,11 @@ async function sendReconciliationEmail(firm, rec, approvalUrl, pdfBuffer, filena
                         </tr>
                     </table>
 
-                    <!-- Bilgi Notu -->
-                    <div style="background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 4px; font-size: 12px; color: #1e40af; line-height: 1.5;">
+                    <!-- Yasal Bilgilendirme ve Ek Dosya Notu -->
+                    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #3b82f6; padding: 14px 16px; border-radius: 6px; font-size: 11.5px; color: #334155; line-height: 1.5; margin-bottom: 10px;">
+                        ⚖️ <strong>Yasal Bildirim (6102 sayılı TTK m. 94):</strong> İşbu cari hesap mutabakat mektubunun tebliğ tarihinden itibaren 1 (bir) ay içerisinde itiraz edilmemesi halinde bakiye kesinleşmiş sayılır. Elektronik ortamda onaylanan bildirimler yetkili adı, unvanı, zaman damgası ve IP bilgisiyle resmi delil niteliğinde saklanmaktadır.
+                    </div>
+                    <div style="background-color: #eff6ff; border-left: 4px solid #0284c7; padding: 10px 16px; border-radius: 4px; font-size: 11.5px; color: #0369a1; line-height: 1.5;">
                         📌 <strong>Ek Dosya:</strong> Ayrıntılı cari hesap hareket dökümünüz bu e-postanın ekinde <strong>${escapeHtml(filename)}</strong> adıyla yer almaktadır.
                     </div>
                 </td>
@@ -4570,6 +4612,16 @@ app.get('/mutabakat/:token', async (req, res) => {
                         <a href="/mutabakat/${token}/pdf" target="_blank" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors shadow-sm">
                             📄 Cari Hesap Ekstresini ve Resmi Mektubu İncele (PDF)
                         </a>
+                    </div>
+
+                    <!-- Hukuki ve Mali Bilgilendirme -->
+                    <div class="p-3.5 bg-slate-950/70 rounded-2xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                        <div class="font-bold text-slate-300 flex items-center gap-1.5">
+                            <span>⚖️ Yasal Dayanak (6102 s. TTK m. 94 & 213 s. VUK)</span>
+                        </div>
+                        <p class="leading-relaxed">
+                            İşbu mutabakat bildirimi Türk Ticaret Kanunu ve Vergi Usul Kanunu uyarınca düzenlenmiştir. Tebliğ tarihinden itibaren yasal 1 aylık süre içerisinde itiraz edilmeyen cari hesap bakiyeleri yasal olarak kesinleşmiş sayılır. Bildiriminiz yetkili adı, unvanı, zaman damgası ve IP bilgisiyle resmi delil niteliğinde kayıt altına alınmaktadır.
+                        </p>
                     </div>
 
                     <!-- Onay Durum Alanı -->
