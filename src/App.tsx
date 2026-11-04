@@ -219,18 +219,6 @@ const App = () => {
           </div>
         </main>
 
-        {/* Floating Destek & İletişim Butonu */}
-        <button
-          type="button"
-          onClick={() => setIsSupportOpen(true)}
-          className="fixed bottom-5 right-5 z-40 bg-slate-900/95 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 hover:border-blue-500/50 shadow-2xl px-3.5 py-2 rounded-full flex items-center gap-2 text-xs font-semibold backdrop-blur-md transition-all hover:scale-105 active:scale-95 group cursor-pointer"
-          title="Destek ve İletişim"
-        >
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <LifeBuoy className="w-4 h-4 text-blue-400 group-hover:rotate-45 transition-transform" />
-          <span className="hidden sm:inline">Destek & İletişim</span>
-        </button>
-
         {/* Destek & İletişim Popup Modalı */}
         <SupportModal isOpen={isSupportOpen} onClose={() => setIsSupportOpen(false)} />
       </div>
