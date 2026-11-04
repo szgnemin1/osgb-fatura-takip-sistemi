@@ -1064,156 +1064,201 @@ export const Reconciliation: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-                {effectiveDisputed.map((item) => {
-                  const cleanPhone = (item.phone || '').replace(/\D/g, '');
-                  return (
-                    <div 
-                      key={item.id} 
-                      className="bg-slate-900 border border-rose-500/40 hover:border-rose-400 rounded-2xl p-4 space-y-3.5 shadow-lg relative group transition-all"
-                    >
-                      {/* Kart Başlığı */}
-                      <div className="flex items-start justify-between gap-3 pb-2.5 border-b border-slate-800">
-                        <div>
-                          <div className="font-extrabold text-white text-sm sm:text-base">{item.firm_name}</div>
-                          <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400 flex-wrap">
-                            <span>🗓️ Dönem: <b>{formatDateTR(item.period)}</b></span>
-                            <span>•</span>
-                            <span>⏰ İtiraz Zamanı: <b>{item.response_at ? new Date(item.response_at).toLocaleString('tr-TR') : '-'}</b></span>
-                          </div>
-                        </div>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-semibold text-[11px]">
+                      <tr>
+                        <th className="py-2.5 px-3">Firma Adı & İletişim</th>
+                        <th className="py-2.5 px-3">Dönem & Zaman</th>
+                        <th className="py-2.5 px-3">İtiraz Eden Yetkili</th>
+                        <th className="py-2.5 px-3 text-right">Bizdeki Bakiye</th>
+                        <th className="py-2.5 px-3 text-right">Müşteri Beyanı</th>
+                        <th className="py-2.5 px-3 text-center">Fark Durumu</th>
+                        <th className="py-2.5 px-3">Müşteri Notu & Yüklenen Belge</th>
+                        <th className="py-2.5 px-3 text-right">İşlemler</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {effectiveDisputed.map((item) => {
+                        const recBal = Number(item.balance) || 0;
+                        const clientBal = item.response_balance != null ? Number(item.response_balance) : null;
+                        const diff = clientBal != null ? (recBal - clientBal) : null;
+                        const cleanPhone = (item.phone || '').replace(/\D/g, '');
 
-                        <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10.5px] font-extrabold shrink-0">
-                          ⚠️ FARK BİLDİRİLDİ
-                        </span>
-                      </div>
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                            {/* Firma Adı & İletişim */}
+                            <td className="py-2 px-3">
+                              <div className="font-semibold text-white text-xs leading-tight">{item.firm_name}</div>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400">
+                                {item.phone && (
+                                  <span className="font-mono text-emerald-400 flex items-center gap-0.5">
+                                    <Phone className="w-2.5 h-2.5" /> {item.phone}
+                                  </span>
+                                )}
+                                {item.email && (
+                                  <span className="text-sky-400 truncate max-w-[130px]" title={item.email}>
+                                    ✉️ {item.email}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
 
-                      {/* Yetkili & İletişim Bilgileri */}
-                      <div className="flex items-center justify-between text-xs bg-slate-950/70 p-2.5 rounded-xl border border-slate-800">
-                        <div>
-                          <span className="text-[10px] text-slate-400 block">İtiraz Eden Müşteri Yetkilisi:</span>
-                          <span className="font-bold text-rose-300">
-                            👤 {item.responder_name || 'Yetkili Belirtilmedi'} {item.responder_title ? `(${item.responder_title})` : ''}
-                          </span>
-                        </div>
-                        <div className="text-right text-[11px]">
-                          {item.phone && (
-                            <div className="text-emerald-400 font-mono font-semibold flex items-center justify-end gap-1">
-                              <Phone className="w-3 h-3" /> {item.phone}
-                            </div>
-                          )}
-                          {item.email && (
-                            <div className="text-sky-400 truncate max-w-[160px] flex items-center justify-end gap-1">
-                              <Mail className="w-3 h-3" /> {item.email}
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                            {/* Dönem & İtiraz Zamanı */}
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 font-mono text-[10.5px] border border-slate-700">
+                                🗓️ {formatDateTR(item.period)}
+                              </span>
+                              {item.response_at && (
+                                <div className="text-[10px] text-rose-300/80 mt-0.5">
+                                  ⏰ {new Date(item.response_at).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}
+                                </div>
+                              )}
+                            </td>
 
-                      {/* Bakiye Karşılaştırması */}
-                      <div className="grid grid-cols-2 gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs">
-                        <div>
-                          <span className="text-slate-400 text-[10.5px]">Bizim Sistemimizdeki Bakiye:</span>
-                          <div className="text-rose-400 font-bold font-mono text-sm mt-0.5">
-                            {Number(item.balance || 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
-                          </div>
-                        </div>
-                        <div>
-                          <span className="text-slate-400 text-[10.5px]">Müşterinin İddia Ettiği:</span>
-                          <div className="text-emerald-400 font-bold font-mono text-sm mt-0.5">
-                            {item.response_balance != null 
-                              ? `${Number(item.response_balance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` 
-                              : 'Tutar Belirtilmedi'}
-                          </div>
-                        </div>
-                      </div>
+                            {/* İtiraz Eden Yetkili */}
+                            <td className="py-2 px-3 whitespace-nowrap">
+                              <div className="font-semibold text-rose-300 text-xs">
+                                👤 {item.responder_name || 'Yetkili'}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {item.responder_title || 'Yetkili'}
+                              </div>
+                              {item.client_ip && (
+                                <div className="text-[9px] text-slate-500 font-mono">
+                                  IP: {item.client_ip}
+                                </div>
+                              )}
+                            </td>
 
-                      {/* Müşteri İtiraz Notu / Açıklaması */}
-                      <div>
-                        <span className="text-[10.5px] font-bold text-slate-400 block mb-1">
-                          📝 Müşterinin Açıklaması / İtiraz Notu:
-                        </span>
-                        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-slate-200 text-xs italic leading-relaxed">
-                          "{item.response_note || 'Açıklama girilmedi.'}"
-                        </div>
-                      </div>
+                            {/* Bizdeki Bakiye */}
+                            <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap">
+                              {recBal > 0 ? (
+                                <span className="text-rose-400">{recBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[9.5px] font-normal">(Borç)</span></span>
+                              ) : recBal < 0 ? (
+                                <span className="text-emerald-400">{Math.abs(recBal).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL <span className="text-[9.5px] font-normal">(Alacak)</span></span>
+                              ) : (
+                                <span className="text-slate-400">0.00 TL</span>
+                              )}
+                            </td>
 
-                      {/* Müşteri Ekstre Belgesi */}
-                      {item.dispute_file_name ? (
-                        <div>
-                          <span className="text-[10.5px] font-bold text-slate-400 block mb-1">
-                            📎 Karşı Firma Ekstresi / Yüklenen Dosya:
-                          </span>
-                          <a
-                            href={`/api/mutabakat/dispute-file/${item.token}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="flex items-center justify-between p-2.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-semibold transition-all group"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <Paperclip className="w-4 h-4 text-sky-400 shrink-0" />
-                              <span className="truncate font-mono text-[11px]">{item.dispute_file_name}</span>
-                            </div>
-                            <span className="text-[10.5px] bg-sky-500/30 text-sky-200 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 group-hover:bg-sky-500/50 shrink-0 ml-2">
-                              <Download className="w-3 h-3" /> Ekstreyi İndir / Aç
-                            </span>
-                          </a>
-                        </div>
-                      ) : (
-                        <div className="text-[10.5px] text-slate-500 italic">
-                          📎 Karşı firma dosya yüklemedi.
-                        </div>
-                      )}
+                            {/* Müşterinin Belirttiği */}
+                            <td className="py-2 px-3 text-right font-mono font-bold whitespace-nowrap">
+                              {clientBal != null ? (
+                                <span className="text-amber-300 font-bold">{clientBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL</span>
+                              ) : (
+                                <span className="text-slate-500 italic text-[10.5px]">Belirtilmedi</span>
+                              )}
+                            </td>
 
-                      {/* Aksiyon Butonları */}
-                      <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2 flex-wrap text-xs">
-                        <div className="flex items-center gap-1.5">
-                          {cleanPhone && (
-                            <a
-                              href={`https://wa.me/90${cleanPhone.replace(/^0+/, '').replace(/^90/, '')}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>WhatsApp'tan Yaz</span>
-                            </a>
-                          )}
-                          <a
-                            href={`/mutabakat/${item.token}/pdf`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                          >
-                            <Download className="w-3.5 h-3.5 text-slate-400" />
-                            <span>PDF Önizle</span>
-                          </a>
-                        </div>
+                            {/* Fark Durumu */}
+                            <td className="py-2 px-3 text-center whitespace-nowrap">
+                              {diff != null ? (
+                                Math.abs(diff) < 0.01 ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                                    <Check className="w-3 h-3" /> Denk
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold" title="Kayıtlarımız ile müşteri bildirimi arasındaki bakiye farkı">
+                                    Fark: {Math.abs(diff).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
+                                  </span>
+                                )
+                              ) : (
+                                <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 text-[10px] font-bold">
+                                  Fark Bildirildi
+                                </span>
+                              )}
+                            </td>
 
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleCopyLink(item.token)}
-                            className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                            title="Onay Linkini Kopyala"
-                          >
-                            {copiedToken === item.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleResetStatus(item.id)}
-                            className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 border border-slate-700 text-xs font-semibold transition-colors flex items-center gap-1"
-                            title="İtirazı çözüp durumu sıfırla ve yeniden gönderilmeye hazırla"
-                          >
-                            <RefreshCw className="w-3 h-3" />
-                            <span>Sıfırla</span>
-                          </button>
-                        </div>
-                      </div>
+                            {/* Müşteri Notu & Belge */}
+                            <td className="py-2 px-3 max-w-xs">
+                              {item.response_note ? (
+                                <div 
+                                  className="text-slate-300 text-[11px] truncate cursor-pointer hover:text-white hover:underline"
+                                  onClick={() => setSelectedDisputeItem(item)}
+                                  title={item.response_note}
+                                >
+                                  "{item.response_note}"
+                                </div>
+                              ) : (
+                                <div className="text-slate-500 italic text-[10px]">Açıklama yok</div>
+                              )}
 
-                    </div>
-                  );
-                })}
+                              {item.dispute_file_name ? (
+                                <div className="mt-1">
+                                  <a
+                                    href={`/api/mutabakat/dispute-file/${item.token}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 text-[10px] font-bold transition-colors"
+                                    title="Karşı firmanın yüklediği ekstreyi indir / aç"
+                                  >
+                                    <Paperclip className="w-3 h-3 text-sky-400 shrink-0" />
+                                    <span className="truncate max-w-[140px] font-mono">{item.dispute_file_name}</span>
+                                    <Download className="w-2.5 h-2.5 text-sky-300 ml-0.5 shrink-0" />
+                                  </a>
+                                </div>
+                              ) : (
+                                <div className="text-[9.5px] text-slate-500 mt-0.5">Dosya yüklenmedi</div>
+                              )}
+                            </td>
+
+                            {/* İşlemler */}
+                            <td className="py-2 px-3 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1">
+                                {cleanPhone && (
+                                  <a
+                                    href={`https://wa.me/90${cleanPhone.replace(/^0+/, '').replace(/^90/, '')}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="p-1 rounded bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 transition-colors"
+                                    title="Müşteriyle WhatsApp'tan İletişime Geç"
+                                  >
+                                    <MessageSquare className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedDisputeItem(item)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="İtiraz Detaylarını Gör"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                </button>
+                                <a
+                                  href={`/mutabakat/${item.token}/pdf`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="Resmi Mutabakat Mektubunu İndir / Önizle (PDF)"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyLink(item.token)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                                  title="Onay Linkini Kopyala"
+                                >
+                                  {copiedToken === item.token ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetStatus(item.id)}
+                                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition-colors"
+                                  title="Durumu Sıfırla (Gönderilmediye Al)"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
