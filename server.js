@@ -5121,6 +5121,157 @@ app.post('/api/reconciliation/reset/:id', authenticateToken, requireAdmin, async
     }
 });
 
+// İtirazı Çözümle (Fark Bildirimini Kesinleştir ve Sisteme İşle)
+app.post('/api/reconciliation/resolve-dispute', authenticateToken, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.status(500).json({ error: 'Veritabanı hazır değil.' });
+        const {
+            id,
+            resolutionType, // 'OURS_CORRECT' | 'CLIENT_CORRECT' | 'CUSTOM' | 'RESEND'
+            resolutionNote = '',
+            createAdjustmentTransaction = false,
+            newBalance = null
+        } = req.body;
+
+        if (!id) return res.status(400).json({ error: 'Mutabakat ID zorunludur.' });
+
+        const rec = await db.get("SELECT * FROM reconciliations WHERE id = ?", [id]);
+        if (!rec) return res.status(404).json({ error: 'Mutabakat kaydı bulunamadı.' });
+
+        const now = new Date().toISOString();
+        const adminUser = req.user?.username || 'Yönetici';
+        const firm = await getFirmById(rec.firm_id);
+        const firmName = firm?.name || 'Firma';
+
+        if (resolutionType === 'OURS_CORRECT') {
+            // 1. BİZİM KAYIT DOĞRU: Müşteri kendi hatasını kabul etti veya atlanan fatura teyit edildi.
+            const noteSuffix = `\n[Çözüm: ${adminUser} - Bizim Bakiye Doğru Kabul Edildi${resolutionNote ? ' | Not: ' + resolutionNote.trim() : ''}]`;
+            const updatedNote = (rec.response_note ? rec.response_note : '') + noteSuffix;
+
+            await db.run(
+                `UPDATE reconciliations 
+                 SET status = 'APPROVED', response_status = 'MUTABIK', response_note = ?, updated_at = ? 
+                 WHERE id = ?`,
+                [updatedNote, now, id]
+            );
+
+            await logAuditEvent(req, 'RECONCILIATION_DISPUTE_RESOLVED', {
+                reconciliationId: id,
+                firmId: rec.firm_id,
+                type: 'OURS_CORRECT',
+                balance: rec.balance,
+                note: resolutionNote
+            }, 'SUCCESS');
+
+            io.emit('db_updated');
+            return res.json({ 
+                success: true, 
+                message: `${firmName} mutabakatı kayıtlarımızdaki bakiye (${Number(rec.balance).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL) ile onaylandı ve arşive kaldırıldı.` 
+            });
+
+        } else if (resolutionType === 'CLIENT_CORRECT' || resolutionType === 'CUSTOM') {
+            // 2. MÜŞTERİ HAKLI veya ÖZEL BAKİYE: Bakiye müşterinin dediği tutara eşitleniyor
+            const targetBalance = (resolutionType === 'CLIENT_CORRECT' && rec.response_balance !== null && rec.response_balance !== undefined)
+                ? Number(rec.response_balance)
+                : (newBalance !== null && newBalance !== undefined ? Number(newBalance) : Number(rec.balance));
+
+            const oldBalance = Number(rec.balance) || 0;
+            const diff = oldBalance - targetBalance; // Pozitif ise bizdeki borç fazlaydı (müşteriye tahsilat/alacak girilmeli)
+
+            // Otomatik Düzeltme Hareketi İşleme: Carideki bakiyeyi de eşitlemek için transactions tablosuna kayıt atılır
+            if (createAdjustmentTransaction && Math.abs(diff) >= 0.01) {
+                const trId = 'adj_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+                const isClientDebtLower = diff > 0; // Müşteri daha az borçlu olduğunu iddia ediyor ve haklı -> Müşteri Alacaklandırılır (Tahsilat/Dekont)
+                
+                const transactionData = {
+                    id: trId,
+                    firmId: rec.firm_id,
+                    date: now.slice(0, 10),
+                    type: isClientDebtLower ? 'TAHSİLAT' : 'FATURA',
+                    category: 'Mutabakat Düzeltmesi',
+                    description: `Mutabakat Bakiye Düzeltme Kaydı (${formatPeriodDisplay(rec.period)}) - ${resolutionNote ? resolutionNote.trim() : 'Müşteri itirazı haklı bulundu ve bakiye eşitlendi'}`,
+                    debt: isClientDebtLower ? 0 : Math.abs(diff),
+                    credit: isClientDebtLower ? Math.abs(diff) : 0,
+                    month: new Date().getMonth() + 1,
+                    year: new Date().getFullYear(),
+                    status: 'APPROVED',
+                    createdAt: now
+                };
+
+                await db.run(
+                    'INSERT OR REPLACE INTO transactions (id, data) VALUES (?, ?)',
+                    [trId, JSON.stringify(transactionData)]
+                );
+            }
+
+            const noteSuffix = `\n[Çözüm: ${adminUser} - Müşteri Beyanı (${targetBalance.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL) Kabul Edildi${createAdjustmentTransaction ? ' (Düzeltme Kaydı Eklendi)' : ''}${resolutionNote ? ' | Not: ' + resolutionNote.trim() : ''}]`;
+            const updatedNote = (rec.response_note ? rec.response_note : '') + noteSuffix;
+
+            await db.run(
+                `UPDATE reconciliations 
+                 SET balance = ?, status = 'APPROVED', response_status = 'MUTABIK', response_note = ?, updated_at = ? 
+                 WHERE id = ?`,
+                [targetBalance, updatedNote, now, id]
+            );
+
+            await logAuditEvent(req, 'RECONCILIATION_DISPUTE_RESOLVED', {
+                reconciliationId: id,
+                firmId: rec.firm_id,
+                type: 'CLIENT_CORRECT',
+                oldBalance,
+                newBalance: targetBalance,
+                diff,
+                adjustmentAdded: createAdjustmentTransaction,
+                note: resolutionNote
+            }, 'SUCCESS');
+
+            io.emit('db_updated');
+            return res.json({ 
+                success: true, 
+                message: `${firmName} mutabakatı müşterinin beyan ettiği bakiye (${targetBalance.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL) ile eşitlenip mutabık yapıldı ve arşive kaldırıldı.` 
+            });
+
+        } else if (resolutionType === 'RESEND') {
+            // 3. DÜZELTİLDİ, YENİDEN ONAYA GÖNDER:
+            let updatedBalance = rec.balance;
+            if (newBalance !== null && newBalance !== undefined && !isNaN(Number(newBalance))) {
+                updatedBalance = Number(newBalance);
+            }
+
+            await db.run(
+                `UPDATE reconciliations 
+                 SET balance = ?, status = 'SENT', response_status = NULL, response_balance = NULL, 
+                     response_note = NULL, dispute_file_path = NULL, dispute_file_name = NULL,
+                     sent_at = ?, updated_at = ? 
+                 WHERE id = ?`,
+                [updatedBalance, now, now, id]
+            );
+
+            // Güncel mutabakat mektubunu tekrar ilet (WhatsApp / E-Posta)
+            const freshRec = await db.get("SELECT * FROM reconciliations WHERE id = ?", [id]);
+            await dispatchReconciliationItem(freshRec, req, 'INITIAL');
+
+            await logAuditEvent(req, 'RECONCILIATION_DISPUTE_RESENT', {
+                reconciliationId: id,
+                firmId: rec.firm_id,
+                updatedBalance,
+                note: resolutionNote
+            }, 'SUCCESS');
+
+            io.emit('db_updated');
+            return res.json({ 
+                success: true, 
+                message: `${firmName} için bakiye güncellendi ve güncel mutabakat onay linki müşteriye tekrar gönderildi.` 
+            });
+        } else {
+            return res.status(400).json({ error: 'Geçersiz çözüm tipi.' });
+        }
+    } catch (e) {
+        console.error('İtiraz çözümleme hatası:', e);
+        res.status(500).json({ error: 'İtiraz çözümlenemedi: ' + e.message });
+    }
+});
+
 // =========================================================================
 // MÜŞTERİ ONLİNE MUTABAKAT ONAY VE İNCELEME SAYFASI (PUBLIC)
 // =========================================================================

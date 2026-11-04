@@ -976,6 +976,23 @@ export const db = {
     return data;
   },
 
+  resolveDispute: async (payload: {
+    id: string;
+    resolutionType: 'OURS_CORRECT' | 'CLIENT_CORRECT' | 'CUSTOM' | 'RESEND';
+    resolutionNote?: string;
+    createAdjustmentTransaction?: boolean;
+    newBalance?: number | null;
+  }): Promise<{ success: boolean; message: string }> => {
+    const res = await fetchWithAuth('/api/reconciliation/resolve-dispute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'İtiraz çözümlenemedi.');
+    return data;
+  },
+
   getReconciliationSettings: async (): Promise<{ managerPhone: string }> => {
     const res = await fetchWithAuth('/api/reconciliation/settings');
     const data = await res.json();

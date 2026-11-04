@@ -120,6 +120,52 @@ export const Reconciliation: React.FC = () => {
   // İtiraz / Not Görüntüleme Modalı (Tablodan açılabilmesi için)
   const [selectedDisputeItem, setSelectedDisputeItem] = useState<ReconciliationItem | null>(null);
 
+  // İtiraz Çözümleme State
+  const [resolvingDisputeItem, setResolvingDisputeItem] = useState<ReconciliationItem | null>(null);
+  const [resolutionType, setResolutionType] = useState<'OURS_CORRECT' | 'CLIENT_CORRECT' | 'RESEND'>('OURS_CORRECT');
+  const [resolutionNote, setResolutionNote] = useState('');
+  const [createAdjustment, setCreateAdjustment] = useState(true);
+  const [customBalanceInput, setCustomBalanceInput] = useState('');
+  const [isResolving, setIsResolving] = useState(false);
+
+  const handleOpenResolveModal = (item: ReconciliationItem) => {
+    setResolvingDisputeItem(item);
+    setResolutionType('OURS_CORRECT');
+    setResolutionNote('');
+    setCreateAdjustment(true);
+    setCustomBalanceInput(item.response_balance != null ? String(item.response_balance) : '');
+  };
+
+  const handleExecuteResolveDispute = async () => {
+    if (!resolvingDisputeItem) return;
+    setIsResolving(true);
+    try {
+      let finalNewBalance: number | null = null;
+      if (resolutionType === 'CLIENT_CORRECT') {
+        finalNewBalance = resolvingDisputeItem.response_balance != null ? Number(resolvingDisputeItem.response_balance) : Number(resolvingDisputeItem.balance);
+      } else if (resolutionType === 'RESEND' && customBalanceInput.trim()) {
+        const parsed = Number(customBalanceInput.replace(',', '.'));
+        if (!isNaN(parsed)) finalNewBalance = parsed;
+      }
+
+      const res = await db.resolveDispute({
+        id: resolvingDisputeItem.id,
+        resolutionType,
+        resolutionNote,
+        createAdjustmentTransaction: resolutionType === 'CLIENT_CORRECT' ? createAdjustment : false,
+        newBalance: finalNewBalance
+      });
+
+      setSuccessMsg(res.message || "İtiraz başarıyla çözümlendi.");
+      setResolvingDisputeItem(null);
+      await loadData();
+    } catch (e: any) {
+      setErrorMsg("İtiraz çözümlenemedi: " + e.message);
+    } finally {
+      setIsResolving(false);
+    }
+  };
+
   // Toplu Gönderim State
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [pendingFilter, setPendingFilter] = useState<'ALL' | 'OVERDUE'>('ALL');
@@ -1207,6 +1253,15 @@ export const Reconciliation: React.FC = () => {
                             {/* İşlemler */}
                             <td className="py-2 px-3 text-right whitespace-nowrap">
                               <div className="flex items-center justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenResolveModal(item)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-sm shadow-emerald-950 transition-all hover:scale-105 mr-1"
+                                  title="İtirazı Çözümle (Bizim Bakiye veya Müşteri Beyanını Sisteme İşle)"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Çözümle</span>
+                                </button>
                                 {cleanPhone && (
                                   <a
                                     href={`https://wa.me/90${cleanPhone.replace(/^0+/, '').replace(/^90/, '')}`}
@@ -2587,13 +2642,284 @@ export const Reconciliation: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-between items-center pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  const current = selectedDisputeItem;
+                  setSelectedDisputeItem(null);
+                  handleOpenResolveModal(current);
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950 transition-all hover:scale-105"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                İtirazı Çözümle & Sisteme İşle
+              </button>
               <button
                 type="button"
                 onClick={() => setSelectedDisputeItem(null)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold"
               >
                 Kapat
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* İTİRAZ ÇÖZÜMLEME MODALI */}
+      {resolvingDisputeItem && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-lg w-full p-5 space-y-4 text-left max-h-[90vh] overflow-y-auto">
+            {/* Başlık */}
+            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5 text-white font-bold text-sm">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-white font-bold text-sm">Mutabakat İtirazını Çözümle</h3>
+                  <p className="text-[11px] text-slate-400 font-normal">{resolvingDisputeItem.firm_name}</p>
+                </div>
+              </div>
+              <button onClick={() => setResolvingDisputeItem(null)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Bakiye Karşılaştırma Kutusu */}
+            {(() => {
+              const recBal = Number(resolvingDisputeItem.balance) || 0;
+              const clientBal = resolvingDisputeItem.response_balance != null ? Number(resolvingDisputeItem.response_balance) : null;
+              const diff = clientBal != null ? (recBal - clientBal) : null;
+
+              return (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs">
+                    <div>
+                      <span className="text-slate-400 block text-[10.5px]">Bizdeki Kayıt:</span>
+                      <span className="text-rose-400 font-mono font-bold text-sm">
+                        {recBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10.5px]">Müşteri Beyanı:</span>
+                      <span className="text-emerald-400 font-mono font-bold text-sm">
+                        {clientBal != null ? `${clientBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : 'Belirtilmedi'}
+                      </span>
+                    </div>
+                    {diff != null && (
+                      <div className="col-span-2 pt-2 border-t border-slate-900 flex justify-between items-center text-[11px]">
+                        <span className="text-slate-400">Aradaki Bakiye Farkı:</span>
+                        <span className="font-mono font-bold text-amber-300">
+                          {Math.abs(diff).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL
+                          {diff > 0 ? ' (Bizde fazla borç)' : ' (Müşteride fazla borç)'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {resolvingDisputeItem.response_note && (
+                    <div className="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800 text-xs text-slate-300 italic">
+                      <span className="text-slate-500 font-semibold not-italic block text-[10px] mb-0.5">Müşteri Notu:</span>
+                      "{resolvingDisputeItem.response_note}"
+                    </div>
+                  )}
+
+                  {resolvingDisputeItem.dispute_file_name && (
+                    <div className="flex items-center justify-between p-2 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs">
+                      <div className="flex items-center gap-2 text-sky-300 truncate">
+                        <Paperclip className="w-3.5 h-3.5 shrink-0 text-sky-400" />
+                        <span className="truncate font-mono text-[11px]">{resolvingDisputeItem.dispute_file_name}</span>
+                      </div>
+                      <a
+                        href={`/api/mutabakat/dispute-file/${resolvingDisputeItem.token}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2 py-1 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 font-semibold text-[10.5px] transition-colors shrink-0 flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" /> İndir
+                      </a>
+                    </div>
+                  )}
+
+                  {/* Çözüm Seçenekleri */}
+                  <div className="space-y-2 pt-1">
+                    <label className="text-xs font-bold text-slate-300 block">Çözüm Kararını Seçiniz:</label>
+
+                    {/* SEÇENEK 1: BİZİM KAYIT DOĞRU */}
+                    <label
+                      onClick={() => setResolutionType('OURS_CORRECT')}
+                      className={`block p-3 rounded-xl border cursor-pointer transition-all ${
+                        resolutionType === 'OURS_CORRECT'
+                          ? 'bg-emerald-950/40 border-emerald-500 ring-2 ring-emerald-500/30 shadow-md'
+                          : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="radio"
+                          name="resolutionType"
+                          value="OURS_CORRECT"
+                          checked={resolutionType === 'OURS_CORRECT'}
+                          onChange={() => setResolutionType('OURS_CORRECT')}
+                          className="mt-1 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <div className="flex-1">
+                          <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                            <span>✅ Bizim Kaydımız Doğru (Müşteri Kabul Etti)</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                            Müşteri ile görüşüldü; faturayı atladığını teyit etti. Bizdeki bakiye (<strong className="text-white">${recBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL</strong>) ile mutabık olarak onaylanır ve arşive kaldırılır.
+                          </p>
+                        </div>
+                      </div>
+                    </label>
+
+                    {/* SEÇENEK 2: MÜŞTERİ HAKLI */}
+                    <label
+                      onClick={() => setResolutionType('CLIENT_CORRECT')}
+                      className={`block p-3 rounded-xl border cursor-pointer transition-all ${
+                        resolutionType === 'CLIENT_CORRECT'
+                          ? 'bg-amber-950/40 border-amber-500 ring-2 ring-amber-500/30 shadow-md'
+                          : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="radio"
+                          name="resolutionType"
+                          value="CLIENT_CORRECT"
+                          checked={resolutionType === 'CLIENT_CORRECT'}
+                          onChange={() => setResolutionType('CLIENT_CORRECT')}
+                          className="mt-1 text-amber-500 focus:ring-amber-500"
+                        />
+                        <div className="flex-1">
+                          <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                            <span>📝 Müşterinin Dediği Doğru (${clientBal != null ? `${clientBal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL` : 'Beyan Tutarı'})</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                            Müşterinin ekstre veya dekontu incelendi ve haklı bulundu. Mutabakat bakiyesi müşterinin tutarına eşitlenir ve mutabık olarak onaylanır.
+                          </p>
+
+                          {resolutionType === 'CLIENT_CORRECT' && diff != null && Math.abs(diff) >= 0.01 && (
+                            <div className="mt-2.5 pt-2 border-t border-amber-500/20 space-y-2">
+                              <label className="flex items-center gap-2 cursor-pointer text-xs text-amber-200">
+                                <input
+                                  type="checkbox"
+                                  checked={createAdjustment}
+                                  onChange={(e) => setCreateAdjustment(e.target.checked)}
+                                  className="rounded text-amber-500 focus:ring-amber-500"
+                                />
+                                <span className="font-semibold text-[11px]">
+                                  Otomatik Düzeltme Kaydı İşle: Aradaki ${Math.abs(diff).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} TL fark için carisine hareket eklensin.
+                                </span>
+                              </label>
+
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1.5 pt-0.5">
+                                <span>Alternatif:</span>
+                                <a
+                                  href={`/details?firmId=${resolvingDisputeItem.firm_id}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-amber-400 underline hover:text-amber-300 inline-flex items-center gap-0.5"
+                                >
+                                  Cari Detayına Git (Manuel Evrak Ekle) ↗
+                                </a>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </label>
+
+                    {/* SEÇENEK 3: DÜZELTİLDİ, YENİDEN ONAYA GÖNDER */}
+                    <label
+                      onClick={() => setResolutionType('RESEND')}
+                      className={`block p-3 rounded-xl border cursor-pointer transition-all ${
+                        resolutionType === 'RESEND'
+                          ? 'bg-sky-950/40 border-sky-500 ring-2 ring-sky-500/30 shadow-md'
+                          : 'bg-slate-950/40 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="radio"
+                          name="resolutionType"
+                          value="RESEND"
+                          checked={resolutionType === 'RESEND'}
+                          onChange={() => setResolutionType('RESEND')}
+                          className="mt-1 text-sky-500 focus:ring-sky-500"
+                        />
+                        <div className="flex-1">
+                          <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                            <span>🔄 Düzeltildi, Müşteriye Güncel Link Gönder</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                            Hata düzeltildi. Müşteriye güncel hesap özeti ile yeni onay linki (WhatsApp & E-posta) gönderilir.
+                          </p>
+
+                          {resolutionType === 'RESEND' && (
+                            <div className="mt-2 pt-2 border-t border-sky-500/20">
+                              <label className="text-[10px] text-slate-300 block mb-1">Gönderilecek Güncel Bakiye (TL):</label>
+                              <input
+                                type="text"
+                                value={customBalanceInput}
+                                onChange={(e) => setCustomBalanceInput(e.target.value)}
+                                placeholder={String(recBal)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-white font-mono"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {/* Yönetici Çözüm Notu */}
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-300 block mb-1">
+                      Yönetici Notu / Görüşme Detayı (Opsiyonel):
+                    </label>
+                    <textarea
+                      value={resolutionNote}
+                      onChange={(e) => setResolutionNote(e.target.value)}
+                      rows={2}
+                      placeholder="Örn: Yetkili Ahmet Bey ile telefonla görüşüldü, atlanan 15.03 faturası kabul edildi..."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Butonlar */}
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setResolvingDisputeItem(null)}
+                disabled={isResolving}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteResolveDispute}
+                disabled={isResolving}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-950 transition-all hover:scale-105"
+              >
+                {isResolving ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Kaydediliyor...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>İtirazı Çözümle & Sisteme İşle</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
