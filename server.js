@@ -23,17 +23,26 @@ const app = express();
 app.set('trust proxy', 1);
 const server = http.createServer(app);
 
-// Sadece kendi ağından veya yerel sunuculardan gelen CORS isteklerine izin ver
-const allowedOrigins = ['http://localhost:4000', 'http://localhost:5000', `http://${ip.address()}:4000`, `http://${ip.address()}:5000`];
+// Sunucu ortamında domain adları, ters proxy'ler (reverse proxy) ve yerel ağ isteklerine tam izin ver
+let lastKnownPublicBaseUrl = null;
+
 const corsOptions = {
     origin: function (origin, callback) {
-        if (!origin || allowedOrigins.indexOf(origin) !== -1 || origin.startsWith('http://192.168.') || origin.startsWith('http://10.')) {
-            callback(null, true);
-        } else {
-            callback(new Error('CORS kuralları gereği bu adresten erişim engellendi.'));
-        }
-    }
+        callback(null, true);
+    },
+    credentials: true
 };
+
+app.use((req, res, next) => {
+    try {
+        const proto = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
+        const host = req.headers['x-forwarded-host'] || req.get('host');
+        if (host && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+            lastKnownPublicBaseUrl = `${proto}://${host}`.replace(/\/$/, '');
+        }
+    } catch (_) {}
+    next();
+});
 
 const io = new Server(server, { cors: corsOptions });
 const PORT = process.env.PORT || 5000;
@@ -3526,25 +3535,46 @@ function formatPhoneForWhatsApp(phone) {
 function getBaseUrl(req) {
     if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL.replace(/\/$/, '');
     if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
+    if (process.env.SERVER_URL) return process.env.SERVER_URL.replace(/\/$/, '');
     
-    let host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || `${ip.address()}.nip.io:${PORT}`;
-    const protocol = req?.headers?.['x-forwarded-proto'] || (req?.connection && req.connection.encrypted ? 'https' : 'http');
-    
-    // Eğer localhost veya 127.0.0.1 ise, yerel ağ IP'sini nip.io domainiyle wrap et (WhatsApp'ta linkin port ile kesilmemesi için)
-    if (host.includes('localhost') || host.includes('127.0.0.1')) {
-        const lanIp = ip.address();
-        host = `${lanIp}.nip.io:${PORT}`;
-    } else {
-        // Eğer doğrudan IP verilmişse (ör: 192.168.1.105:5000), WhatsApp IP portunu kestiği için domain formatına çevir
-        const hostParts = host.split(':');
-        const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
-        if (ipRegex.test(hostParts[0])) {
+    const rawProto = req?.headers?.['x-forwarded-proto'] || (req?.connection && req.connection.encrypted ? 'https' : 'http');
+    const rawHost = req?.headers?.['x-forwarded-host'] || req?.get?.('host');
+
+    if (rawHost) {
+        // 1. Gerçek Domain Adı Kontrolü (Örn: fatura.cankayaosgb.com veya panel.osgb.com.tr)
+        // Eğer localhost/127.0.0.1 değilse ve doğrudan IP formatında değilse (yani standart alan adı ise) doğrudan kullan!
+        const hostWithoutPort = rawHost.split(':')[0];
+        const isIp = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(hostWithoutPort);
+        const isLocal = hostWithoutPort === 'localhost' || hostWithoutPort === '127.0.0.1';
+
+        if (!isIp && !isLocal) {
+            // Gerçek bir alan adı (domain)! Asla nip.io veya port ekleme/değiştirme yapma
+            return `${rawProto}://${rawHost}`;
+        }
+
+        // 2. Eğer yerel ağ IP'si veya localhost ise ve daha önce bilinen genel bir alan adı varsa onu kullan
+        if (lastKnownPublicBaseUrl) {
+            return lastKnownPublicBaseUrl;
+        }
+
+        // 3. Doğrudan IP veya localhost için WhatsApp'ta tıklanabilir olması adına nip.io kullan
+        let host = rawHost;
+        if (isLocal) {
+            const lanIp = ip.address();
+            host = `${lanIp}.nip.io:${PORT}`;
+        } else if (isIp) {
+            const hostParts = rawHost.split(':');
             const portSuffix = hostParts[1] ? `:${hostParts[1]}` : '';
             host = `${hostParts[0]}.nip.io${portSuffix}`;
         }
+        return `${rawProto}://${host}`;
     }
-    
-    return `${protocol}://${host}`;
+
+    // req yoksa (otopilot veya arka plan cron görevleri)
+    if (lastKnownPublicBaseUrl) {
+        return lastKnownPublicBaseUrl;
+    }
+    return `http://${ip.address()}.nip.io:${PORT}`;
 }
 
 
