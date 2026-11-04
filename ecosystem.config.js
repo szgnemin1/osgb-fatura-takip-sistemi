@@ -6,6 +6,7 @@ module.exports = {
       cwd: "C:\\Users\\emins\\Downloads\\osgb-fatura-takip\\osgb-fatura-takip-main",
       env: {
         NODE_ENV: "production",
+        NODE_SKIP_PLATFORM_CHECK: "1",
         PORT: 5000
       }
     },
@@ -15,6 +16,7 @@ module.exports = {
       cwd: "C:\\Users\\emins\\Downloads\\osgb-fatura-takip\\osgb-fatura-takip-main\\osgb-tetkik-takip",
       env: {
         NODE_ENV: "production",
+        NODE_SKIP_PLATFORM_CHECK: "1",
         PORT: 4000
       }
     }
