@@ -254,6 +254,7 @@ export interface ReconciliationStats {
   pending: number;
   allPendingCount?: number;
   allApprovedCount?: number;
+  allDisputedCount?: number;
   hasPhone: number;
   hasEmail: number;
   hasBoth: number;

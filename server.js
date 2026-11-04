@@ -4741,12 +4741,23 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
             approvedItems.push(item);
         }
 
+        // 4. Tarihten bağımsız, müşteri tarafından fark bildirilmiş (İtiraz / Fark Var) tüm kayıtlar (status = 'DISPUTED')
+        const disputedRows = await db.all(
+            `SELECT r.*, f.data as firm_data 
+             FROM reconciliations r 
+             LEFT JOIN firms f ON r.firm_id = f.id 
+             WHERE r.status = 'DISPUTED' 
+             ORDER BY r.response_at DESC, r.updated_at DESC`
+        );
+        const disputedItems = disputedRows.map(mapRecRow);
+
         const stats = {
             total: items.length,
             sent: items.filter(i => i.status !== 'PENDING_SEND').length,
             approved: items.filter(i => i.status === 'APPROVED').length,
             allApprovedCount: approvedItems.filter(i => i.is_latest).length,
-            disputed: items.filter(i => i.status === 'DISPUTED').length,
+            disputed: disputedItems.length > 0 ? disputedItems.length : items.filter(i => i.status === 'DISPUTED').length,
+            allDisputedCount: disputedItems.length,
             pending: items.filter(i => i.status === 'SENT').length,
             allPendingCount: pendingItems.length,
             hasPhone: items.filter(i => i.phone && i.phone.trim().length >= 10).length,
@@ -4755,7 +4766,7 @@ app.get('/api/reconciliation/data', authenticateToken, async (req, res) => {
             missingContact: items.filter(i => (!i.phone || i.phone.trim().length < 10) && (!i.email || !i.email.includes('@'))).length
         };
 
-        res.json({ items, stats, pendingItems, approvedItems });
+        res.json({ items, stats, pendingItems, approvedItems, disputedItems });
     } catch (e) {
         console.error('Mutabakat veri hatası:', e);
         res.status(500).json({ error: 'Mutabakat verileri alınamadı: ' + e.message });
