@@ -1,4 +1,13 @@
 require('dotenv').config();
+
+// Global Hata Yakalayıcılar - Beklenmedik socket/network kopmalarında sunucunun çökmesini engeller
+process.on('uncaughtException', (err) => {
+    console.error('[UNCAUGHT EXCEPTION]', err?.message || err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[UNHANDLED REJECTION]', reason?.message || reason);
+});
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -3240,6 +3249,7 @@ let waUserPhone = null;
 let isWaInitializing = false;
 let isExplicitlyClosingWa = false;
 let waReconnectTimer = null;
+let waUnauthTimeoutCount = 0;
 
 const waAuthDir = path.join(dbDir, 'whatsapp_auth');
 if (!fs.existsSync(waAuthDir)) fs.mkdirSync(waAuthDir, { recursive: true });
@@ -3398,17 +3408,34 @@ async function initWhatsApp() {
                 console.log('[WhatsApp] Bağlantı kapandı, kod:', statusCode, 'Yeniden bağlanma:', shouldReconnect);
 
                 if (shouldReconnect) {
+                    const hasActiveSession = fs.existsSync(path.join(waAuthDir, 'creds.json'));
+                    if (!hasActiveSession && statusCode === 408) {
+                        waUnauthTimeoutCount++;
+                        if (waUnauthTimeoutCount >= 3) {
+                            console.log('[WhatsApp] QR okutma zaman aşımına uğradı (3 deneme tamamlandı). Beklemeye geçildi. Kullanıcı arayüzden QR yenilediğinde başlatılacaktır.');
+                            clearWaReconnectTimer();
+                            waQrCode = null;
+                            io.emit('wa_status', { isConnected: false, qrCode: null, phoneNumber: null });
+                            return;
+                        }
+                        console.log(`[WhatsApp] QR zaman aşımı (${waUnauthTimeoutCount}/3). 15 saniye sonra tekrar denenecek.`);
+                        scheduleWaReconnect(15000);
+                        return;
+                    }
+
                     const delay = statusCode === DisconnectReason.restartRequired ? 1000 : 5000;
                     scheduleWaReconnect(delay);
                 } else {
                     waQrCode = null;
                     waUserPhone = null;
+                    waUnauthTimeoutCount = 0;
                     try { fs.rmSync(waAuthDir, { recursive: true, force: true }); } catch (_) {}
                     fs.mkdirSync(waAuthDir, { recursive: true });
                     io.emit('wa_status', { isConnected: false, qrCode: null, phoneNumber: null });
                 }
             } else if (connection === 'open') {
                 clearWaReconnectTimer();
+                waUnauthTimeoutCount = 0;
                 isWaConnected = true;
                 waQrCode = null;
                 waUserPhone = waSocket.user?.id ? waSocket.user.id.split(':')[0] : null;
@@ -4101,6 +4128,7 @@ app.get('/api/whatsapp/status', authenticateToken, (req, res) => {
 app.post('/api/whatsapp/restart', authenticateToken, requireAdmin, async (req, res) => {
     try {
         clearWaReconnectTimer();
+        waUnauthTimeoutCount = 0;
         isExplicitlyClosingWa = true;
         if (waSocket) {
             try {
