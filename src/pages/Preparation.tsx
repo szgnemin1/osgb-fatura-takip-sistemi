@@ -820,9 +820,10 @@ const Preparation = () => {
                     aggregatedExcel[groupKey] = { name: rawName, count: rawCount, danger: rawDanger, maxCountForDanger: rawCount, sgk: rawSgk, extra: rawExtra };
                 } else {
                     const existing = aggregatedExcel[groupKey];
-                    existing.count += rawCount; // Çalışan sayısını topla
+                    // Excel'den gelen çalışan sayısı kabul edilir ve eski sayının yerine yazılır (üstüne ekleme yapılmaz)
+                    existing.count = rawCount;
                     if (rawExtra > 0) {
-                        existing.extra = (existing.extra || 0) + rawExtra;
+                        existing.extra = rawExtra;
                     }
                     
                     // Tehlike sınıfı farklıysa şube mantığı (az olanı çok olana bağla)
@@ -845,10 +846,10 @@ const Preparation = () => {
                 Object.values(aggregatedExcel).forEach((aggrItem, idx) => {
                     const matchedFirm = matchFirm(aggrItem.name, aggrItem.danger, aggrItem.sgk);
                     if (matchedFirm) {
-                        if (updates[matchedFirm.id] === undefined) updates[matchedFirm.id] = 0;
-                        updates[matchedFirm.id] += aggrItem.count;
+                        // Excel'den gelen çalışan sayısı kabul edilir ve eski sayının yerine yazılır (üstüne ekleme yapılmaz)
+                        updates[matchedFirm.id] = aggrItem.count;
                         if (aggrItem.extra !== undefined && aggrItem.extra > 0) {
-                            extraUpdates[matchedFirm.id] = (extraUpdates[matchedFirm.id] || 0) + aggrItem.extra;
+                            extraUpdates[matchedFirm.id] = aggrItem.extra;
                         }
                         if (!newUploadedIds.includes(matchedFirm.id)) {
                             newUploadedIds.push(matchedFirm.id);
@@ -870,6 +871,7 @@ const Preparation = () => {
                         ...(extraUpdates[id] !== undefined ? { extraItemAmount: extraUpdates[id] } : {})
                     };
                 });
+                db.savePreparationItems(Object.values(newItems));
                 return newItems;
             });
             setUploadedFirmIds(newUploadedIds);
@@ -2045,10 +2047,8 @@ const Preparation = () => {
                                   const targetFirmId = selectedMapping[idx];
                                   if (targetFirmId) {
                                       // Mevcut firmaya eşleştir
-                                      if (newUpdates[targetFirmId] === undefined) {
-                                          newUpdates[targetFirmId] = (items[targetFirmId]?.currentEmployeeCount || 0);
-                                      }
-                                      newUpdates[targetFirmId] += u.count;
+                                      // Mevcut firmaya eşleştir: Excel sayısını doğrudan yaz
+                                      newUpdates[targetFirmId] = u.count;
                                       if (!newUploads.includes(targetFirmId)) newUploads.push(targetFirmId);
                                       
                                       // SGK Numarasını firmaya ekle (Bir sonraki ay sormaması için)
@@ -2101,6 +2101,7 @@ const Preparation = () => {
                                   });
                                   return newItems;
                               });
+                                   db.savePreparationItems(Object.values(newItems));
 
                               setUploadedFirmIds(newUploads);
                               setUnmatchedRows([]);
