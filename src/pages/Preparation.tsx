@@ -2039,75 +2039,79 @@ const Preparation = () => {
                       <button onClick={() => setShowUnmatchedModal(false)} className="px-4 py-2 text-slate-400 hover:text-white transition-colors">Vazgeç & Kapat</button>
                       <button 
                           onClick={() => {
-                              const newFirms: Firm[] = [];
-                              const newUpdates: Record<string, number> = {};
-                              const newUploads = [...uploadedFirmIds];
+                              try {
+                                  const newFirms: Firm[] = [];
+                                  const newUpdates: Record<string, number> = {};
+                                  const newUploads = [...uploadedFirmIds];
 
-                              unmatchedRows.forEach((u, idx) => {
-                                  const targetFirmId = selectedMapping[idx];
-                                  if (targetFirmId) {
-                                      // Mevcut firmaya eşleştir
-                                      // Mevcut firmaya eşleştir: Excel sayısını doğrudan yaz
-                                      newUpdates[targetFirmId] = u.count;
-                                      if (!newUploads.includes(targetFirmId)) newUploads.push(targetFirmId);
-                                      
-                                      // SGK Numarasını firmaya ekle (Bir sonraki ay sormaması için)
-                                      if (u.sgk) {
-                                          const existingFirm = firms.find(f => f.id === targetFirmId);
-                                          if (existingFirm) {
-                                              if (!existingFirm.sgkNumber) {
-                                                  existingFirm.sgkNumber = u.sgk;
-                                                  db.updateFirm(existingFirm);
-                                              } else {
-                                                  const existingSgks = existingFirm.sgkNumber.split(',').map(s => s.trim());
-                                                  if (!existingSgks.includes(u.sgk.trim())) {
-                                                      existingFirm.sgkNumber += `, ${u.sgk.trim()}`;
+                                  unmatchedRows.forEach((u, idx) => {
+                                      const targetFirmId = selectedMapping[idx];
+                                      if (targetFirmId) {
+                                          // Mevcut firmaya eşleştir: Excel sayısını doğrudan yaz
+                                          newUpdates[targetFirmId] = u.count;
+                                          if (!newUploads.includes(targetFirmId)) newUploads.push(targetFirmId);
+                                          
+                                          // SGK Numarasını firmaya ekle (Bir sonraki ay sormaması için)
+                                          if (u.sgk) {
+                                              const existingFirm = firms.find(f => f.id === targetFirmId);
+                                              if (existingFirm) {
+                                                  if (!existingFirm.sgkNumber) {
+                                                      existingFirm.sgkNumber = u.sgk;
                                                       db.updateFirm(existingFirm);
+                                                  } else {
+                                                      const existingSgks = existingFirm.sgkNumber.split(',').map(s => s.trim());
+                                                      if (!existingSgks.includes(u.sgk.trim())) {
+                                                          existingFirm.sgkNumber += `, ${u.sgk.trim()}`;
+                                                          db.updateFirm(existingFirm);
+                                                      }
                                                   }
                                               }
                                           }
+                                      } else {
+                                          // Yeni firma oluştur
+                                          const newFirm = db.addFirm({
+                                              name: u.name,
+                                              dangerClass: u.danger,
+                                              sgkNumber: u.sgk || '',
+                                              basePersonLimit: u.count,
+                                              baseFee: 1000, // Varsayılan ücret, kullanıcı sonra değiştirir
+                                              extraPersonFee: 50,
+                                              expertPercentage: globalSettings?.expertPercentage || 60,
+                                              doctorPercentage: globalSettings?.doctorPercentage || 40,
+                                              defaultInvoiceType: InvoiceType.E_ARSIV,
+                                              pricingModel: PricingModel.STANDARD
+                                          });
+                                          newFirms.push(newFirm);
+                                          newUpdates[newFirm.id] = u.count;
+                                          newUploads.push(newFirm.id);
                                       }
-                                  } else {
-                                      // Yeni firma oluştur
-                                      const newFirm = db.addFirm({
-                                          name: u.name,
-                                          dangerClass: u.danger,
-                                          sgkNumber: u.sgk || '',
-                                          basePersonLimit: u.count,
-                                          baseFee: 1000, // Varsayılan ücret, kullanıcı sonra değiştirir
-                                          extraPersonFee: 50,
-                                          expertPercentage: globalSettings?.expertPercentage || 60,
-                                          doctorPercentage: globalSettings?.doctorPercentage || 40,
-                                          defaultInvoiceType: InvoiceType.E_ARSIV,
-                                          pricingModel: PricingModel.STANDARD
-                                      });
-                                      newFirms.push(newFirm);
-                                      newUpdates[newFirm.id] = u.count;
-                                      newUploads.push(newFirm.id);
-                                  }
-                              });
-
-                              if (newFirms.length > 0) {
-                                  setFirms(db.getFirms());
-                              }
-
-                              setItems(prev => {
-                                  const newItems = { ...prev };
-                                  Object.keys(newUpdates).forEach(id => {
-                                      newItems[id] = {
-                                          ...(newItems[id] || { firmId: id, extraItemAmount: 0 }),
-                                          currentEmployeeCount: newUpdates[id]
-                                      };
                                   });
-                                  return newItems;
-                              });
-                                   db.savePreparationItems(Object.values(newItems));
 
-                              setUploadedFirmIds(newUploads);
-                              setUnmatchedRows([]);
-                              setSelectedMapping({});
-                              setShowUnmatchedModal(false);
-                              alert("Eşleşmeyen firmalar başarıyla sisteme aktarıldı.");
+                                  if (newFirms.length > 0) {
+                                      setFirms(db.getFirms());
+                                  }
+
+                                  setItems(prev => {
+                                      const newItems = { ...prev };
+                                      Object.keys(newUpdates).forEach(id => {
+                                          newItems[id] = {
+                                              ...(newItems[id] || { firmId: id, extraItemAmount: 0 }),
+                                              currentEmployeeCount: newUpdates[id]
+                                          };
+                                      });
+                                      db.savePreparationItems(Object.values(newItems));
+                                      return newItems;
+                                  });
+
+                                  setUploadedFirmIds(newUploads);
+                                  setUnmatchedRows([]);
+                                  setSelectedMapping({});
+                                  setShowUnmatchedModal(false);
+                                  alert("Eşleşmeyen firmalar başarıyla sisteme aktarıldı.");
+                              } catch (err: any) {
+                                  console.error("Hata:", err);
+                                  alert("İşlem sırasında hata oluştu: " + (err?.message || err));
+                              }
                           }}
                           className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
                       >
