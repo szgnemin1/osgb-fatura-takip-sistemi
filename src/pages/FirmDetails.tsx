@@ -399,7 +399,7 @@ const FirmDetails = () => {
   });
 
   const totalBilled = transactions
-    .filter(t => t.type === TransactionType.INVOICE)
+    .filter(t => t.type === TransactionType.INVOICE && (t.status === 'APPROVED' || !t.status))
     .reduce((sum, t) => sum + t.debt, 0);
 
   // Sadece tahsilatı kesinleşmiş işlemler (normal tahsilat veya tahsil edilmiş çek)

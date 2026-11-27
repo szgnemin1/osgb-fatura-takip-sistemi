@@ -138,6 +138,7 @@ export interface GlobalSettings {
     firmGroups?: string[]; // Dinamik Firma Grupları (Grup 1, Grup 2 vb.)
     reconciliationManagerPhone?: string; // Mutabakat yanıtlarının iletileceği yönetici WhatsApp numarası
     managerPhone?: string;
+    ignoredSgkNumbers?: string[]; // Excel yüklemesinde "Bir daha sorma" denilen SGK sicil numaraları
 }
 
 export interface LogEntry {

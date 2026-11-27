@@ -2,10 +2,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { db } from '../services/db';
 import { Firm, PreparationItem, TransactionType, GlobalSettings, InvoiceType, PricingModel, ServiceType } from '../types';
-import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare, Download, Loader2, CheckCircle2, Building2, Folder, Settings, Plus, Stethoscope, Eye, Receipt, Users, DollarSign } from 'lucide-react';
+import { Calculator, Save, ArrowRight, Upload, Search, CalendarCheck, Filter, FileSpreadsheet, XCircle, ListFilter, AlertCircle, Network, GitCompare, Download, Loader2, CheckCircle2, Building2, Folder, Settings, Plus, Stethoscope, } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { GroupManagerModal } from '../components/GroupManagerModal';
+import { SequentialFirmModal, UnmatchedQueueItem } from '../components/SequentialFirmModal';
+import { CheckCircle } from 'lucide-react';
 
 const months = [
   'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 
@@ -16,11 +18,12 @@ const Preparation = () => {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  // Hazırlık Modu Sekmesi: İSG Hizmet Faturaları vs Sevk / Tetkik Faturaları
-  const [prepTab, setPrepTab] = useState<'ISG' | 'TETKIK'>('ISG');
   const [selectedTetkikDetailFirm, setSelectedTetkikDetailFirm] = useState<any | null>(null);
-  const [tetkikSearchTerm, setTetkikSearchTerm] = useState('');
-  const [tetkikSelectedGroup, setTetkikSelectedGroup] = useState('ALL');
+
+  // Sıralı Yeni Firma Kayıt Modalı State'leri
+  const [showSequentialModal, setShowSequentialModal] = useState(false);
+  const [sequentialQueue, setSequentialQueue] = useState<UnmatchedQueueItem[]>([]);
+  const [sequentialIndex, setSequentialIndex] = useState(0);
 
   const [firms, setFirms] = useState<Firm[]>([]);
   const [items, setItems] = useState<Record<string, PreparationItem>>({});
@@ -49,8 +52,7 @@ const Preparation = () => {
   const [selectedHealthMapping, setSelectedHealthMapping] = useState<Record<string, string>>({});
 
   // Sevk Tablosunda Kullanıcı Tarafından Düzenlenen Tutarlar (Firma ID -> Belirlenen Tutar)
-  const [customTetkikAmounts, setCustomTetkikAmounts] = useState<Record<string, number>>({});
-
+  
   // Sevk Aktarım Tarih & İşlem State'leri
   const [tetkikStartDate, setTetkikStartDate] = useState(() => {
     const now = new Date();
@@ -114,13 +116,19 @@ const Preparation = () => {
 
     f.forEach(firm => {
       const existing = saved.find((s: any) => s && s.firmId === firm.id);
-      
+      const firmHealth = firmHealthRecordsMap[firm.id] || [];
+      const healthIds = firmHealth.map((h: any) => h.id);
+      const healthTotal = firmHealth.reduce((sum: number, h: any) => sum + (Number(h.amount) || 0), 0);
+
+      const currentExtra = existing ? (Number(existing.extraItemAmount) || 0) : 0;
+      const effectiveExtra = healthTotal > 0 ? healthTotal : currentExtra;
+
       initialItems[firm.id] = { 
         firmId: firm.id, 
         currentEmployeeCount: existing ? existing.currentEmployeeCount : (Number(firm.basePersonLimit) || 0), 
-        extraItemAmount: existing ? (Number(existing.extraItemAmount) || 0) : 0, 
+        extraItemAmount: effectiveExtra, 
         addYearlyFee: existing ? existing.addYearlyFee : false,
-        externalHealthRecordIds: []
+        externalHealthRecordIds: healthIds
       };
     });
     setItems(initialItems);
@@ -211,94 +219,7 @@ const Preparation = () => {
     }
   }, [unmatchedCompanyGroups, firms]);
 
-  // Faturalandırılacak Sevkli Firmalar (Sadece unbilled, cari firmayla eşleşmiş olanlar)
-  const tetkikFirmsToBill = React.useMemo(() => {
-    const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices().filter((s:any) => !s.isBilled) : [];
-    const transactions = db.getTransactions ? db.getTransactions() : [];
-    const lockedHealthRecordIds = new Set<string>();
-    transactions.forEach((t: any) => {
-      if (t.status === 'PENDING' && t.calculatedDetails?.externalHealthRecordIds) {
-        t.calculatedDetails.externalHealthRecordIds.forEach((id: string) => lockedHealthRecordIds.add(id));
-      }
-    });
 
-    const unbilledRecords = extHealth.filter((s: any) => !s.isBilled && !lockedHealthRecordIds.has(s.id));
-
-    const map = new Map<string, {
-      firm: Firm;
-      records: any[];
-      subtotal: number;
-      grandTotal: number;
-      examsSummary: Record<string, number>;
-    }>();
-
-    unbilledRecords.forEach(rec => {
-      if (!rec.matchedFirmId || rec.matchedFirmId === '__SKIP__' || rec.matchedFirmId === 'IGNORE') {
-        return;
-      }
-      const firm = firms.find(f => f.id === rec.matchedFirmId);
-      if (!firm) return;
-
-      if (!map.has(firm.id)) {
-        map.set(firm.id, {
-          firm,
-          records: [],
-          subtotal: 0,
-          grandTotal: 0,
-          examsSummary: {}
-        });
-      }
-
-      const entry = map.get(firm.id)!;
-      entry.records.push(rec);
-      const amount = Number(rec.amount) || 0;
-      entry.subtotal += amount;
-
-      if (Array.isArray(rec.exams)) {
-        rec.exams.forEach((ex: any) => {
-          const exName = typeof ex === 'string' ? ex : (ex.name || ex.examName || 'Tetkik');
-          entry.examsSummary[exName] = (entry.examsSummary[exName] || 0) + 1;
-        });
-      }
-    });
-
-    const list = Array.from(map.values()).map(item => {
-      const originalSubtotal = item.subtotal;
-      const effectiveSubtotal = customTetkikAmounts[item.firm.id] !== undefined
-        ? customTetkikAmounts[item.firm.id]
-        : originalSubtotal;
-      const kdvRate = 0.20;
-      const grandTotal = item.firm.isKdvExcluded ? effectiveSubtotal * (1 + kdvRate) : effectiveSubtotal;
-      return {
-        ...item,
-        originalSubtotal,
-        subtotal: effectiveSubtotal,
-        isCustomAmount: customTetkikAmounts[item.firm.id] !== undefined,
-        grandTotal: Math.round(grandTotal * 100) / 100
-      };
-    });
-
-    return list.sort((a, b) => b.grandTotal - a.grandTotal);
-  }, [firms, unmatchedHealthRecords, customTetkikAmounts]);
-
-  const filteredTetkikFirms = React.useMemo(() => {
-    return tetkikFirmsToBill.filter(item => {
-      const matchesSearch = (item.firm.name || '').toLowerCase().includes(tetkikSearchTerm.toLowerCase()) ||
-                            (item.firm.taxNumber || '').includes(tetkikSearchTerm);
-      const matchesGroup = tetkikSelectedGroup === 'ALL' ||
-                           (tetkikSelectedGroup === 'UNGROUPED' && !item.firm.group) ||
-                           (item.firm.group === tetkikSelectedGroup);
-      return matchesSearch && matchesGroup;
-    });
-  }, [tetkikFirmsToBill, tetkikSearchTerm, tetkikSelectedGroup]);
-
-  const totalTetkikAmount = React.useMemo(() => {
-    return filteredTetkikFirms.reduce((sum, item) => sum + item.grandTotal, 0);
-  }, [filteredTetkikFirms]);
-
-  const totalTetkikReferralCount = React.useMemo(() => {
-    return filteredTetkikFirms.reduce((sum, item) => sum + item.records.length, 0);
-  }, [filteredTetkikFirms]);
 
   // Sevk Aktarım Barı İstatistiği
   const { totalActiveHealthCount, totalActiveHealthTotal } = React.useMemo(() => {
@@ -617,6 +538,24 @@ const Preparation = () => {
     XLSX.writeFile(workbook, `${fileName}_${new Date().toLocaleDateString('tr-TR')}.xlsx`);
   };
 
+  const cleanSgk = (s?: any): string => {
+    if (!s) return '';
+    return String(s).replace(/\D/g, '').trim();
+  };
+
+  const matchFirmBySgk = (excelSgk: string, firmList: Firm[]): Firm | null => {
+    const target = cleanSgk(excelSgk);
+    if (!target || target.length < 5) return null;
+    for (const f of firmList) {
+      if (!f.sgkNumber) continue;
+      const sList = f.sgkNumber.split(',').map(s => cleanSgk(s)).filter(Boolean);
+      if (sList.includes(target)) {
+        return f;
+      }
+    }
+    return null;
+  };
+
   const cleanCompanyName = (name: string) => {
       if (!name) return "";
       let cleaned = String(name)
@@ -631,89 +570,6 @@ const Preparation = () => {
           
       let withoutSuffix = cleaned.replace(/\b(LTD|STI|SAN|TIC|AS|A S|VE|LIMITED|SIRKETI|TICARET|ANONIM|SANAYI)\b/g, '').replace(/\s+/g, ' ').trim();
       return withoutSuffix.length > 2 ? withoutSuffix : cleaned;
-  };
-
-  const matchFirm = (excelName: string, excelDangerClass: string, excelSgk?: string) => {
-      const hasSgk = (dbSgk: string | undefined, search: string) => {
-          if (!dbSgk) return false;
-          return dbSgk.split(',').map(s => s.trim()).includes(search.trim());
-      };
-
-      // 0. SGK ile Mükemmel Eşleşme
-      if (excelSgk) {
-          const sgkMatch = firms.find(f => hasSgk(f.sgkNumber, excelSgk));
-          if (sgkMatch) return sgkMatch;
-      }
-
-      const cleanedExcel = cleanCompanyName(excelName);
-      if (!cleanedExcel || cleanedExcel.length < 3) return null;
-
-      // 1. Tam Eşleşme
-      let matches = firms.filter(f => {
-          const fClean = cleanCompanyName(f.name);
-          if (fClean === cleanedExcel) {
-              if (excelSgk && f.sgkNumber && !hasSgk(f.sgkNumber, excelSgk)) return false;
-              return true;
-          }
-          return false;
-      });
-      
-      // 2. Tehlike Sınıfı Filtresi
-      if (matches.length > 1 && excelDangerClass) {
-          const dangerFiltered = matches.filter(f => {
-              const dbDanger = (f.dangerClass || '').toLowerCase();
-              const xlDanger = excelDangerClass.toLowerCase();
-              return dbDanger.includes(xlDanger) || xlDanger.includes(dbDanger);
-          });
-          if (dangerFiltered.length > 0) matches = dangerFiltered;
-      }
-
-      if (matches.length === 1) return matches[0];
-
-      // 3. Güvenli Kısmi Eşleşme (Altküme Kesişimi)
-      if (cleanedExcel.length >= 4) {
-          const excelTokens = cleanedExcel.split(' ');
-          let bestMatch = null;
-          let maxDbTokenCount = 0;
-
-          for (const f of firms) {
-              if (excelSgk && f.sgkNumber && !hasSgk(f.sgkNumber, excelSgk)) continue;
-
-              const fClean = cleanCompanyName(f.name);
-              if (fClean.length >= 4) {
-                  const dbTokens = fClean.split(' ');
-                  
-                  // dbTokens içindeki HER kelimenin, excelTokens içinde tam veya başlangıç olarak geçmesi gerekir
-                  const isSubset = dbTokens.every(dt => 
-                      dt.length >= 3 && excelTokens.some(et => et === dt || et.startsWith(dt))
-                  );
-
-                  if (isSubset) {
-                      let isValid = true;
-                      
-                      // Eğer iki tarafın da tehlike sınıfı varsa uyuştuğundan emin ol (farklıysa eşleşme iptal)
-                      if (excelDangerClass && f.dangerClass) {
-                          const dbDanger = f.dangerClass.toLowerCase();
-                          const xlDanger = excelDangerClass.toLowerCase();
-                          if (!dbDanger.includes(xlDanger) && !xlDanger.includes(dbDanger)) {
-                              isValid = false;
-                          }
-                      }
-
-                      if (isValid) {
-                          // Eğer birden fazla altküme eşleşmesi varsa, daha uzun kelime sayısına sahip olanı seç (daha spesifik olan)
-                          if (dbTokens.length > maxDbTokenCount) {
-                              maxDbTokenCount = dbTokens.length;
-                              bestMatch = f;
-                          }
-                      }
-                  }
-              }
-          }
-          if (bestMatch) return bestMatch;
-      }
-
-      return null;
   };
 
   const handleUploadPrepData = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -781,8 +637,8 @@ const Preparation = () => {
             const newUploadedIds: string[] = [];
             let matchedCount = 0;
 
-            // 1. Önce Excel verisini kendi içinde grupla (Şube Birleştirme Mantığı)
-            const aggregatedExcel: Record<string, { name: string, count: number, danger: string, maxCountForDanger: number, sgk: string, extra?: number }> = {};
+            // 1. Önce Excel verisini kendi içinde grupla (SGK Sicil No bazlı gruplama)
+            const aggregatedExcel: Record<string, { name: string, count: number, danger: string, maxCountForDanger: number, sgk: string, cleanSgk: string, extra?: number }> = {};
 
             for (let i = headerRowIdx + 1; i < rawData.length; i++) {
                 const row = rawData[i];
@@ -808,16 +664,17 @@ const Preparation = () => {
                 const rawCount = Number(rawCountStr);
                 const rawDanger = dangerColIdx !== -1 ? String(row[dangerColIdx] || "").trim() : "";
                 const rawSgk = sgkColIdx !== -1 ? String(row[sgkColIdx] || "").trim() : "";
+                const cSgk = cleanSgk(rawSgk);
                 const rawExtraStr = extraColIdx !== -1 ? String(row[extraColIdx] || "").replace(/[^0-9.,]/g, '').replace(',', '.') : '';
                 const rawExtra = rawExtraStr ? Number(rawExtraStr) : 0;
 
                 if (!rawName || isNaN(rawCount)) continue;
 
-                // EĞER SGK numarası varsa onunla, yoksa tam şirket isminin büyük harf haliyle grupla (Asla eksik/kırpılmış isimle gruplama!)
-                const groupKey = rawSgk ? `SGK_${rawSgk}` : `NAME_${rawName.toUpperCase().replace(/\s+/g, ' ').trim()}`;
+                // SGK numarası varsa temiz haliyle, yoksa isimle grupla
+                const groupKey = cSgk ? `SGK_${cSgk}` : `NAME_${rawName.toUpperCase().replace(/\s+/g, ' ').trim()}`;
 
                 if (!aggregatedExcel[groupKey]) {
-                    aggregatedExcel[groupKey] = { name: rawName, count: rawCount, danger: rawDanger, maxCountForDanger: rawCount, sgk: rawSgk, extra: rawExtra };
+                    aggregatedExcel[groupKey] = { name: rawName, count: rawCount, danger: rawDanger, maxCountForDanger: rawCount, sgk: rawSgk, cleanSgk: cSgk, extra: rawExtra };
                 } else {
                     const existing = aggregatedExcel[groupKey];
                     // Excel'den gelen çalışan sayısı kabul edilir ve eski sayının yerine yazılır (üstüne ekleme yapılmaz)
@@ -825,28 +682,29 @@ const Preparation = () => {
                     if (rawExtra > 0) {
                         existing.extra = rawExtra;
                     }
-                    
-                    // Tehlike sınıfı farklıysa şube mantığı (az olanı çok olana bağla)
-                    if (existing.danger !== rawDanger) {
-                        if (rawCount > existing.maxCountForDanger) {
+                    if (rawCount > existing.maxCountForDanger) {
+                        existing.maxCountForDanger = rawCount;
+                        if (existing.danger !== rawDanger) {
                             existing.danger = rawDanger;
-                            existing.maxCountForDanger = rawCount;
-                            existing.name = rawName; // Çok olanın ismini baz al
-                        }
-                    } else {
-                        if (rawCount > existing.maxCountForDanger) {
-                            existing.maxCountForDanger = rawCount;
+                            existing.name = rawName;
                         }
                     }
                 }
             }
 
-            // 2. Şimdi gruplanmış ve birleştirilmiş verileri veritabanı ile eşleştir
+            // 2. Şimdi veritabanı ile eşleştir: KESİNLİKLE SGK Sicil No ile eşleştirme yapılır!
             if (idColIdx === -1) {
-                Object.values(aggregatedExcel).forEach((aggrItem, idx) => {
-                    const matchedFirm = matchFirm(aggrItem.name, aggrItem.danger, aggrItem.sgk);
+                const ignoredSgks = new Set((db.getIgnoredSgkNumbers ? db.getIgnoredSgkNumbers() : []).map(cleanSgk));
+                let unmappedIdx = 0;
+
+                Object.values(aggregatedExcel).forEach((aggrItem) => {
+                    // Eğer bu SGK kara listedeyse (bir daha sorma denildiyse), tamamen atla
+                    if (aggrItem.cleanSgk && ignoredSgks.has(aggrItem.cleanSgk)) {
+                        return;
+                    }
+
+                    const matchedFirm = matchFirmBySgk(aggrItem.sgk, firms);
                     if (matchedFirm) {
-                        // Excel'den gelen çalışan sayısı kabul edilir ve eski sayının yerine yazılır (üstüne ekleme yapılmaz)
                         updates[matchedFirm.id] = aggrItem.count;
                         if (aggrItem.extra !== undefined && aggrItem.extra > 0) {
                             extraUpdates[matchedFirm.id] = aggrItem.extra;
@@ -856,7 +714,14 @@ const Preparation = () => {
                             matchedCount++;
                         }
                     } else {
-                        unmapped.push({ index: idx, name: aggrItem.name, count: aggrItem.count, danger: aggrItem.danger, sgk: aggrItem.sgk });
+                        unmapped.push({
+                            index: unmappedIdx++,
+                            name: aggrItem.name,
+                            count: aggrItem.count,
+                            danger: aggrItem.danger,
+                            sgk: aggrItem.sgk,
+                            cleanSgk: aggrItem.cleanSgk
+                        });
                     }
                 });
             }
@@ -876,13 +741,14 @@ const Preparation = () => {
             });
             setUploadedFirmIds(newUploadedIds);
 
-            // KURAL 5: Eşleşmeyenleri Askıya Al
+            // Eşleşmeyenleri Askıya Al
             if (unmapped.length > 0) {
                 setUnmatchedRows(unmapped);
+                setSelectedMapping({});
                 setUnmatchedPage(1);
                 setShowUnmatchedModal(true);
             } else {
-                alert(`${matchedCount} firmanın çalışan sayıları excel'den alınarak güncellendi.`);
+                alert(`${matchedCount} firmanın çalışan sayıları SGK sicil no ile eşleştirilerek güncellendi.`);
             }
 
         } catch (err) {
@@ -897,6 +763,96 @@ const Preparation = () => {
   const handleClearUploadFilter = () => {
       setUploadedFirmIds([]);
       setSearchTerm('');
+  };
+
+  const handleApplyUnmatched = async () => {
+    try {
+      const newUploads = [...uploadedFirmIds];
+      const newUpdates: Record<string, number> = {};
+      const itemsToCreate: UnmatchedQueueItem[] = [];
+
+      for (let i = 0; i < unmatchedRows.length; i++) {
+        const u = unmatchedRows[i];
+        const action = selectedMapping[i] || '__SKIP__';
+
+        if (action === '__SKIP__') {
+          continue;
+        }
+
+        if (action === '__NEVER_ASK__') {
+          const clean = u.cleanSgk || cleanSgk(u.sgk);
+          if (clean && db.addIgnoredSgkNumber) {
+            db.addIgnoredSgkNumber(clean);
+          }
+          continue;
+        }
+
+        if (action === '__CREATE__') {
+          itemsToCreate.push({
+            index: i,
+            name: u.name,
+            sgk: u.sgk,
+            danger: u.danger,
+            count: u.count,
+            cleanSgk: u.cleanSgk || cleanSgk(u.sgk)
+          });
+          continue;
+        }
+
+        // Mevcut bir firmaya bağlama: action bir firmId'dir
+        const targetFirmId = action;
+        const existingFirm = firms.find(f => f.id === targetFirmId);
+        if (existingFirm) {
+          const cleanNew = cleanSgk(u.sgk);
+          if (cleanNew) {
+            if (!existingFirm.sgkNumber) {
+              existingFirm.sgkNumber = u.sgk;
+            } else {
+              const parts = existingFirm.sgkNumber.split(',').map(s => cleanSgk(s));
+              if (!parts.includes(cleanNew)) {
+                existingFirm.sgkNumber += `, ${u.sgk}`;
+              }
+            }
+            db.updateFirm(existingFirm);
+          }
+          newUpdates[targetFirmId] = u.count;
+          if (!newUploads.includes(targetFirmId)) {
+            newUploads.push(targetFirmId);
+          }
+        }
+      }
+
+      if (Object.keys(newUpdates).length > 0) {
+        setItems(prev => {
+          const updated = { ...prev };
+          Object.keys(newUpdates).forEach(id => {
+            updated[id] = {
+              ...(updated[id] || { firmId: id, currentEmployeeCount: 0, extraItemAmount: 0 }),
+              currentEmployeeCount: newUpdates[id]
+            };
+          });
+          db.savePreparationItems(Object.values(updated));
+          return updated;
+        });
+        setUploadedFirmIds(newUploads);
+        setFirms(db.getFirms());
+      }
+
+      setShowUnmatchedModal(false);
+      setUnmatchedRows([]);
+      setSelectedMapping({});
+
+      if (itemsToCreate.length > 0) {
+        setSequentialQueue(itemsToCreate);
+        setSequentialIndex(0);
+        setShowSequentialModal(true);
+      } else {
+        alert("Eşleştirme ve güncelleme işlemleri tamamlandı.");
+      }
+    } catch (err: any) {
+      console.error("Eşleştirme uygulama hatası:", err);
+      alert("Hata oluştu: " + (err.message || err));
+    }
   };
 
   // --- FATURA OLUŞTURMA YARDIMCISI ---
@@ -1130,126 +1086,7 @@ const Preparation = () => {
       }
   };
 
-  const handleInvoiceSingleTetkik = async (firmId: string) => {
-    const firmGroup = tetkikFirmsToBill.find(tf => tf.firm.id === firmId);
-    if (!firmGroup) return;
-    const { firm, records, subtotal, grandTotal } = firmGroup;
-
-    if (!window.confirm(`${firm.name} için ${formatCurrency(grandTotal)} tutarında Sağlık Sevk/Tetkik Faturası oluşturulsun mu?`)) {
-      return;
-    }
-
-    const date = new Date();
-    const currentMonth = date.getMonth() + 1;
-    const currentYear = date.getFullYear();
-    const monthName = months[currentMonth - 1];
-    const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli - ${monthName} ${currentYear}`;
-    const billedExtIds = records.map(r => r.id);
-
-    await db.addTransaction({
-      firmId: firm.id,
-      date: date.toISOString(),
-      type: TransactionType.INVOICE,
-      invoiceType: firm.defaultInvoiceType || InvoiceType.E_ARSIV,
-      category: 'HEALTH_EXAM',
-      description: desc,
-      debt: grandTotal,
-      credit: 0,
-      month: currentMonth,
-      year: currentYear,
-      status: 'PENDING',
-      calculatedDetails: {
-        employeeCount: 0,
-        extraItemAmount: subtotal,
-        expertShare: 0,
-        doctorShare: 0,
-        serviceAmount: 0,
-        isHealthOnlyInvoice: true,
-        healthTotal: subtotal,
-        healthCount: 0,
-        externalHealthRecordIds: billedExtIds,
-        recordsSummary: records.map(r => ({
-          id: r.id,
-          employeeName: r.employeeName,
-          amount: r.amount,
-          date: r.date,
-          exams: r.exams
-        }))
-      }
-    });
-
-    if (billedExtIds.length > 0 && db.markExternalHealthServicesAsBilled) {
-      db.markExternalHealthServicesAsBilled(billedExtIds);
-    }
-
-    alert(`✅ ${firm.name} için Sevk Faturası taslak olarak oluşturuldu.`);
-    setSelectedTetkikDetailFirm(null);
-  };
-
-  const handleInvoiceAllTetkik = async () => {
-    if (filteredTetkikFirms.length === 0) return;
-    if (!window.confirm(`${filteredTetkikFirms.length} firmanın toplam ${formatCurrency(totalTetkikAmount)} tutarındaki Sevk Faturaları oluşturulsun mu?`)) {
-      return;
-    }
-
-    const date = new Date();
-    const currentMonth = date.getMonth() + 1;
-    const currentYear = date.getFullYear();
-    const monthName = months[currentMonth - 1];
-    const allBilledIds: string[] = [];
-    const newTransactions: any[] = [];
-
-    filteredTetkikFirms.forEach(item => {
-      const { firm, records, subtotal, grandTotal } = item;
-      const desc = `Sağlık Tetkik ve Tarama Hizmet Bedeli - ${monthName} ${currentYear}`;
-      const recordIds = records.map(r => r.id);
-
-      newTransactions.push({
-        firmId: firm.id,
-        date: date.toISOString(),
-        type: TransactionType.INVOICE,
-        invoiceType: firm.defaultInvoiceType || InvoiceType.E_ARSIV,
-        category: 'HEALTH_EXAM',
-        description: desc,
-        debt: grandTotal,
-        credit: 0,
-        month: currentMonth,
-        year: currentYear,
-        status: 'PENDING',
-        calculatedDetails: {
-          employeeCount: 0,
-          extraItemAmount: subtotal,
-          expertShare: 0,
-          doctorShare: 0,
-          serviceAmount: 0,
-          isHealthOnlyInvoice: true,
-          healthTotal: subtotal,
-          healthCount: 0,
-          externalHealthRecordIds: recordIds,
-          recordsSummary: records.map(r => ({
-            id: r.id,
-            employeeName: r.employeeName,
-            amount: r.amount,
-            date: r.date,
-            exams: r.exams
-          }))
-        }
-      });
-
-      allBilledIds.push(...recordIds);
-    });
-
-    if (newTransactions.length > 0) {
-      if (allBilledIds.length > 0 && db.markExternalHealthServicesAsBilled) {
-        db.markExternalHealthServicesAsBilled(allBilledIds);
-      }
-      await db.addTransactionsBulk(newTransactions);
-      alert(`✅ ${newTransactions.length} firmanın Sevk Faturaları taslak olarak oluşturuldu.`);
-      navigate('/invoices');
-    }
-  };
-
-  const formatCurrency = (val: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(val);
+const formatCurrency = (val: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(val);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
@@ -1259,86 +1096,26 @@ const Preparation = () => {
             <Calculator className="w-8 h-8 text-yellow-500" /> Fatura Hazırlık
           </h2>
           <p className="text-slate-400 mt-2 text-sm">
-            {prepTab === 'ISG' 
-              ? 'İSG çalışan sayılarını belirleyin ve faturalandırın. Şube firmaları ana firmada toplanır.' 
-              : 'Tetkik Takip sisteminden aktarılan faturalı sevkleri bağımsız olarak faturalandırın.'}
+            İSG çalışan sayılarını ve sağlık sevklerini belirleyin, tek seferde birleşik faturalandırın.
           </p>
         </div>
         <div>
-          {prepTab === 'ISG' ? (
-            <button 
-              onClick={handleInvoiceAll} 
-              disabled={filteredFirms.length === 0}
-              className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-105 active:scale-95"
-            >
-              <Save className="w-5 h-5" /> 
-              {selectedGroup !== 'ALL' && selectedGroup !== 'UNGROUPED' 
-                ? `3. "${selectedGroup}" Grubunu Faturalaştır (${filteredFirms.length})` 
-                : selectedGroup === 'UNGROUPED'
-                ? `3. Grupsuz Firmaları Faturalaştır (${filteredFirms.length})`
-                : `3. Görünenleri Faturalaştır (${filteredFirms.length})`}
-            </button>
-          ) : (
-            <button 
-              onClick={handleInvoiceAllTetkik} 
-              disabled={filteredTetkikFirms.length === 0}
-              className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-105 active:scale-95"
-            >
-              <Receipt className="w-5 h-5" /> 
-              <span>Sevk Faturalarını Kes ({filteredTetkikFirms.length} Firma)</span>
-            </button>
-          )}
+          <button 
+            onClick={handleInvoiceAll} 
+            disabled={filteredFirms.length === 0}
+            className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all hover:scale-105 active:scale-95"
+          >
+            <Save className="w-5 h-5" /> 
+            {selectedGroup !== 'ALL' && selectedGroup !== 'UNGROUPED' 
+              ? `3. "${selectedGroup}" Grubunu Faturalaştır (${filteredFirms.length})` 
+              : selectedGroup === 'UNGROUPED'
+              ? `3. Grupsuz Firmaları Faturalaştır (${filteredFirms.length})`
+              : `3. Görünenleri Faturalaştır (${filteredFirms.length})`}
+          </button>
         </div>
       </header>
 
-      {/* SEKMELER: İSG HİZMET FATURALARI & SEVK / TETKİK FATURALARI */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-700/80 pb-3">
-        <button
-          type="button"
-          onClick={() => setPrepTab('ISG')}
-          className={`flex items-center gap-2.5 px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm ${
-            prepTab === 'ISG'
-              ? 'bg-blue-600 text-white shadow-blue-900/30 ring-2 ring-blue-500/50'
-              : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-          }`}
-        >
-          <Building2 className="w-4 h-4" />
-          <span>İSG Hizmet Faturaları</span>
-          <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${prepTab === 'ISG' ? 'bg-blue-800 text-blue-100' : 'bg-slate-900 text-slate-400'}`}>
-            {firms.length}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setPrepTab('TETKIK')}
-          className={`flex items-center gap-2.5 px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm ${
-            prepTab === 'TETKIK'
-              ? 'bg-emerald-600 text-white shadow-emerald-900/30 ring-2 ring-emerald-500/50'
-              : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-          }`}
-        >
-          <Stethoscope className="w-4 h-4" />
-          <span>Sevk / Tetkik Faturaları</span>
-          {tetkikFirmsToBill.length > 0 ? (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-mono font-bold">
-              {tetkikFirmsToBill.length} Firma
-            </span>
-          ) : (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-900 text-slate-500 font-mono">
-              0
-            </span>
-          )}
-          {unmatchedCompanyGroups.length > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-medium animate-pulse">
-              ⚠️ {unmatchedCompanyGroups.length} Eşleşme Bekliyor
-            </span>
-          )}
-        </button>
-      </div>
-      
-      {prepTab === 'ISG' ? (
-        <>
+<>
           {/* ARAÇ ÇUBUĞU */}
           <div className="flex flex-col gap-2.5 bg-slate-800 p-2.5 rounded-xl border border-slate-700 shadow-lg">
            {/* Üst Satır: Arama + Fatura Tipi Filtresi + Şablon & Yükle Butonları */}
@@ -1496,6 +1273,112 @@ const Preparation = () => {
            </div>
       </div>
 
+      {/* SEVK / TETKİK AKTARIM VE FATURAYA BAĞLAMA BARI */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-slate-800/90 border border-slate-700 p-3 rounded-xl shadow-md">
+          <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 shrink-0 text-slate-200">
+                  <Stethoscope className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-bold tracking-wide">Sağlık Sevkleri:</span>
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+                  <input 
+                      type="date"
+                      value={tetkikStartDate}
+                      onChange={(e) => setTetkikStartDate(e.target.value)}
+                      className="bg-transparent text-xs text-white outline-none cursor-pointer"
+                      title="Başlangıç Tarihi"
+                  />
+                  <span className="text-slate-500 text-xs px-0.5">-</span>
+                  <input 
+                      type="date"
+                      value={tetkikEndDate}
+                      onChange={(e) => setTetkikEndDate(e.target.value)}
+                      className="bg-transparent text-xs text-white outline-none cursor-pointer"
+                      title="Bitiş Tarihi"
+                  />
+              </div>
+
+              <div className="flex items-center gap-1">
+                  <button 
+                      type="button"
+                      onClick={() => {
+                          const now = new Date();
+                          const y = now.getFullYear();
+                          const m = String(now.getMonth() + 1).padStart(2, '0');
+                          const lastD = String(new Date(y, now.getMonth() + 1, 0).getDate()).padStart(2, '0');
+                          setTetkikStartDate(`${y}-${m}-01`);
+                          setTetkikEndDate(`${y}-${m}-${lastD}`);
+                      }}
+                      className="text-[11px] font-medium bg-slate-700 hover:bg-slate-600 text-slate-300 px-2.5 py-1 rounded transition-colors"
+                  >
+                      Bu Ay
+                  </button>
+                  <button 
+                      type="button"
+                      onClick={() => {
+                          const now = new Date();
+                          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                          const y = prev.getFullYear();
+                          const m = String(prev.getMonth() + 1).padStart(2, '0');
+                          const lastD = String(new Date(y, prev.getMonth() + 1, 0).getDate()).padStart(2, '0');
+                          setTetkikStartDate(`${y}-${m}-01`);
+                          setTetkikEndDate(`${y}-${m}-${lastD}`);
+                      }}
+                      className="text-[11px] font-medium bg-slate-700 hover:bg-slate-600 text-slate-300 px-2.5 py-1 rounded transition-colors"
+                  >
+                      Geçen Ay
+                  </button>
+              </div>
+
+              <button
+                  type="button"
+                  disabled={isSyncingSevkler}
+                  onClick={handleSyncSevkler}
+                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-all shrink-0"
+              >
+                  {isSyncingSevkler ? (
+                      <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Aktarılıyor...</span>
+                      </>
+                  ) : (
+                      <>
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Sevkleri Getir ve Faturaya Bağla</span>
+                      </>
+                  )}
+              </button>
+          </div>
+
+          <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+              {unmatchedCompanyGroups.length > 0 ? (
+                  <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-lg">
+                      <span className="text-xs text-amber-400 font-medium flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                          <b>{unmatchedCompanyGroups.length}</b> firma ({unmatchedHealthRecords.length} sevk - {formatCurrency(unmatchedHealthTotal)}) eşleşme bekliyor
+                      </span>
+                      <button
+                          type="button"
+                          onClick={() => setShowUnmatchedHealthModal(true)}
+                          className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-2.5 py-0.5 rounded transition-colors shadow-sm"
+                      >
+                          Eşleştir
+                      </button>
+                  </div>
+              ) : (
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-3 py-1 rounded-lg">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>
+                          {totalActiveHealthCount > 0 
+                              ? `${totalActiveHealthCount} faturalı sevk hazır (${formatCurrency(totalActiveHealthTotal)})` 
+                              : 'Tüm sevkler carilerle eşleştirildi'}
+                      </span>
+                  </div>
+              )}
+          </div>
+      </div>
+
       <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
         <div className="overflow-hidden">
           <table className="w-full text-left table-fixed">
@@ -1573,12 +1456,18 @@ const Preparation = () => {
                                 placeholder="0" 
                             />
                             {item?.externalHealthRecordIds && item.externalHealthRecordIds.length > 0 && (
-                                <span 
-                                    className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1 py-0.5 rounded font-mono font-medium" 
-                                    title={`${item.externalHealthRecordIds.length} adet sevk tetkik tutarı`}
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        const extHealth = db.getExternalHealthServices ? db.getExternalHealthServices() : [];
+                                        const recs = extHealth.filter((s: any) => item.externalHealthRecordIds?.includes(s.id));
+                                        setSelectedTetkikDetailFirm({ firm, records: recs, grandTotal: Number(extraAmount) || 0 });
+                                    }}
+                                    className="text-[9px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 px-1.5 py-0.5 rounded font-mono font-medium transition-colors cursor-pointer flex items-center gap-0.5" 
+                                    title={`${item.externalHealthRecordIds.length} adet sevk tetkik tutarı (Detayları görmek için tıklayın)`}
                                 >
                                     🩺 {item.externalHealthRecordIds.length} Sevk
-                                </span>
+                                </button>
                             )}
                         </div>
                     </td>
@@ -1619,415 +1508,136 @@ const Preparation = () => {
         </div>
       </div>
         </>
-      ) : (
-        <>
-          {/* SEVK / TETKİK MODU */}
-          {/* 1. SEVK / TETKİK AKTARIM BARI */}
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 bg-slate-900 border border-slate-700/80 p-3 rounded-xl shadow-md">
-              <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex items-center gap-1.5 shrink-0 text-slate-200">
-                      <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                      <span className="text-xs font-bold tracking-wide flex items-center gap-1">
-                          <GitCompare className="w-4 h-4 text-emerald-400" />
-                          Sevk Aktarımı:
-                      </span>
-                  </div>
-
-                  <div className="flex items-center gap-1 bg-slate-800/90 border border-slate-700 rounded-lg px-2 py-1">
-                      <input 
-                          type="date"
-                          value={tetkikStartDate}
-                          onChange={(e) => setTetkikStartDate(e.target.value)}
-                          className="bg-transparent text-xs text-white outline-none cursor-pointer"
-                          title="Başlangıç Tarihi"
-                      />
-                      <span className="text-slate-500 text-xs px-0.5">-</span>
-                      <input 
-                          type="date"
-                          value={tetkikEndDate}
-                          onChange={(e) => setTetkikEndDate(e.target.value)}
-                          className="bg-transparent text-xs text-white outline-none cursor-pointer"
-                          title="Bitiş Tarihi"
-                      />
-                  </div>
-
-                  <div className="flex items-center gap-1">
-                      <button 
-                          type="button"
-                          onClick={() => {
-                              const now = new Date();
-                              const y = now.getFullYear();
-                              const m = String(now.getMonth() + 1).padStart(2, '0');
-                              const lastD = String(new Date(y, now.getMonth() + 1, 0).getDate()).padStart(2, '0');
-                              setTetkikStartDate(`${y}-${m}-01`);
-                              setTetkikEndDate(`${y}-${m}-${lastD}`);
-                          }}
-                          className="text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded border border-slate-700 transition-colors"
-                      >
-                          Bu Ay
-                      </button>
-                      <button 
-                          type="button"
-                          onClick={() => {
-                              const now = new Date();
-                              const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                              const y = prev.getFullYear();
-                              const m = String(prev.getMonth() + 1).padStart(2, '0');
-                              const lastD = String(new Date(y, prev.getMonth() + 1, 0).getDate()).padStart(2, '0');
-                              setTetkikStartDate(`${y}-${m}-01`);
-                              setTetkikEndDate(`${y}-${m}-${lastD}`);
-                          }}
-                          className="text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded border border-slate-700 transition-colors"
-                      >
-                          Geçen Ay
-                      </button>
-                  </div>
-
-                  <button
-                      type="button"
-                      disabled={isSyncingSevkler}
-                      onClick={handleSyncSevkler}
-                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-all shrink-0"
-                  >
-                      {isSyncingSevkler ? (
-                          <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              <span>Aktarılıyor...</span>
-                          </>
-                      ) : (
-                          <>
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Sevkleri Aktar</span>
-                          </>
-                      )}
-                  </button>
-              </div>
-
-              <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
-                  {unmatchedCompanyGroups.length > 0 ? (
-                      <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-lg">
-                          <span className="text-xs text-amber-400 font-medium flex items-center gap-1">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
-                              <b>{unmatchedCompanyGroups.length}</b> firma ({unmatchedHealthRecords.length} sevk - {formatCurrency(unmatchedHealthTotal)}) eşleşme bekliyor
-                          </span>
-                          <button
-                              type="button"
-                              onClick={() => setShowUnmatchedHealthModal(true)}
-                              className="text-xs bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-2.5 py-0.5 rounded transition-colors shadow-sm"
-                          >
-                              Eşleştir
-                          </button>
-                      </div>
-                  ) : (
-                      <div className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-3 py-1 rounded-lg">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                          <span>
-                              {totalActiveHealthCount > 0 
-                                  ? `${totalActiveHealthCount} sevk hazır (${formatCurrency(totalActiveHealthTotal)})` 
-                                  : 'Tüm sevkler eşleştirildi'}
-                          </span>
-                      </div>
-                  )}
-              </div>
-          </div>
-
-          {/* 2. ÖZET İSTATİSTİK KARTLARI */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-slate-800/80 border border-slate-700/80 p-3.5 rounded-xl flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
-                      <Building2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                      <div className="text-xs text-slate-400">Faturalanacak Firma</div>
-                      <div className="text-lg font-bold text-slate-100 font-mono">
-                          {filteredTetkikFirms.length} Firma
-                      </div>
-                  </div>
-              </div>
-
-              <div className="bg-slate-800/80 border border-slate-700/80 p-3.5 rounded-xl flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-                      <Users className="w-5 h-5" />
-                  </div>
-                  <div>
-                      <div className="text-xs text-slate-400">Toplam Faturalı Sevk</div>
-                      <div className="text-lg font-bold text-emerald-400 font-mono">
-                          {totalTetkikReferralCount} Sevk
-                      </div>
-                  </div>
-              </div>
-
-              <div className="bg-slate-800/80 border border-slate-700/80 p-3.5 rounded-xl flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                      <DollarSign className="w-5 h-5" />
-                  </div>
-                  <div>
-                      <div className="text-xs text-slate-400">Toplam Sevk Fatura Tutarı</div>
-                      <div className="text-lg font-bold text-amber-300 font-mono">
-                          {formatCurrency(totalTetkikAmount)}
-                      </div>
-                  </div>
-              </div>
-          </div>
-
-          {/* 3. SEVK ARAMA & GRUP FİLTRESİ */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-slate-800 p-2.5 rounded-xl border border-slate-700 shadow-md">
-              <div className="flex flex-col sm:flex-row items-center gap-2 flex-1">
-                  <div className="relative flex-1 w-full">
-                      <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
-                      <input 
-                          type="text" 
-                          placeholder="Sevk Firması Ara..." 
-                          value={tetkikSearchTerm} 
-                          onChange={(e) => setTetkikSearchTerm(e.target.value)} 
-                          className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2 text-xs sm:text-sm text-slate-200 outline-none focus:border-emerald-500" 
-                      />
-                  </div>
-
-                  <div className="relative w-full sm:w-48">
-                      <Folder className="absolute left-3 top-2.5 w-4 h-4 text-slate-500 pointer-events-none" />
-                      <select 
-                          value={tetkikSelectedGroup}
-                          onChange={(e) => setTetkikSelectedGroup(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-600 rounded-lg pl-9 pr-4 py-2 text-xs sm:text-sm text-slate-200 outline-none focus:border-emerald-500 cursor-pointer appearance-none"
-                      >
-                          <option value="ALL">Tüm Gruplar</option>
-                          <option value="UNGROUPED">Grupsuz Firmalar</option>
-                          {groups.map(g => (
-                              <option key={g} value={g}>{g}</option>
-                          ))}
-                      </select>
-                  </div>
-              </div>
-
-              <div className="text-xs text-slate-400 self-center shrink-0">
-                  <span>Gösterilen: <b className="text-white font-mono">{filteredTetkikFirms.length}</b> firma</span>
-              </div>
-          </div>
-
-          {/* 4. SEVK / TETKİK TABLOSU */}
-          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-slate-300">
-                <thead className="bg-slate-900 border-b border-slate-700 text-[10px] sm:text-xs uppercase tracking-wider text-slate-400 font-semibold">
-                  <tr>
-                    <th className="py-3 px-4">Firma Adı & Grubu</th>
-                    <th className="py-3 px-4">Yapılan Tetkikler Özeti</th>
-                    <th className="py-3 px-4 text-center w-28">Fatura Tipi</th>
-                    <th className="py-3 px-4 text-right w-44">Hizmet Tutarı (TL)</th>
-                    <th className="py-3 px-4 text-right w-36">Fatura Tutarı (TL)</th>
-                    <th className="py-3 px-4 text-center w-36">İşlemler</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700 text-sm">
-                  {filteredTetkikFirms.map((item) => {
-                    const { firm, subtotal, grandTotal, examsSummary, isCustomAmount, originalSubtotal } = item;
-                    const examsList = Object.entries(examsSummary);
-
-                    return (
-                      <tr key={firm.id} className="hover:bg-slate-700/50 transition-colors">
-                        <td className="py-3 px-4">
-                          <div className="flex flex-col">
-                            <span className="font-bold text-slate-100 flex items-center gap-1.5">
-                              <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
-                              {firm.name}
-                            </span>
-                            <div className="flex items-center gap-2 mt-1">
-                              {firm.group && (
-                                <span className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/30 px-1.5 py-0.2 rounded font-medium">
-                                  {firm.group}
-                                </span>
-                              )}
-                              {firm.taxNumber && (
-                                <span className="text-[11px] text-slate-500 font-mono">
-                                  VKN: {firm.taxNumber}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex flex-wrap gap-1 max-w-md">
-                            {examsList.slice(0, 4).map(([examName, count]) => (
-                              <span key={examName} className="text-[11px] bg-slate-900 border border-slate-700 text-slate-300 px-2 py-0.5 rounded-md flex items-center gap-1">
-                                <span>{examName}</span>
-                                <b className="text-emerald-400 font-mono">({count})</b>
-                              </span>
-                            ))}
-                            {examsList.length > 4 && (
-                              <span className="text-[10px] text-slate-400 self-center">
-                                +{examsList.length - 4} tetkik daha
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${
-                            firm.defaultInvoiceType === InvoiceType.E_FATURA
-                              ? 'bg-purple-950/60 text-purple-300 border-purple-500/40'
-                              : 'bg-blue-950/60 text-blue-300 border-blue-500/40'
-                          }`}>
-                            {firm.defaultInvoiceType || 'E-Arşiv'}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="flex flex-col items-end gap-1">
-                            <div className="relative flex items-center">
-                              <span className="absolute left-2.5 text-slate-400 text-xs font-mono select-none">₺</span>
-                              <input
-                                type="number"
-                                min="0"
-                                step="any"
-                                value={subtotal}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  setCustomTetkikAmounts(prev => ({
-                                    ...prev,
-                                    [firm.id]: isNaN(val) ? 0 : val
-                                  }));
-                                }}
-                                className="w-32 bg-slate-900/90 border border-slate-600 focus:border-emerald-500 rounded-lg pl-6 pr-2 py-1.5 text-right font-mono text-sm font-bold text-slate-100 outline-none focus:ring-1 focus:ring-emerald-500 transition-all"
-                                title="Bu firma için kesilecek hizmet tutarını doğrudan düzenleyebilirsiniz"
-                              />
-                            </div>
-                            {isCustomAmount && (
-                              <div className="flex items-center gap-1.5 text-[10px]">
-                                <span className="text-amber-400/90 font-mono">
-                                  Asıl: ₺{originalSubtotal.toLocaleString('tr-TR')}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setCustomTetkikAmounts(prev => {
-                                      const next = { ...prev };
-                                      delete next[firm.id];
-                                      return next;
-                                    });
-                                  }}
-                                  className="text-slate-400 hover:text-red-400 underline font-medium"
-                                  title="Orijinal sevk tutarına sıfırla"
-                                >
-                                  Sıfırla
-                                </button>
-                              </div>
-                            )}
-                            {firm.isKdvExcluded && (
-                              <div className="text-[10px] text-slate-500">+ %20 KDV</div>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <span className="font-mono font-bold text-emerald-400 text-base">
-                            {formatCurrency(grandTotal)}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedTetkikDetailFirm(item)}
-                              className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white border border-slate-600 transition-colors"
-                              title="Sevk Detaylarını Gör"
-                            >
-                              <Eye className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleInvoiceSingleTetkik(firm.id)}
-                              className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-all shadow-sm"
-                              title="Bu firma için Sevk Faturası kes"
-                            >
-                              <Receipt className="w-3.5 h-3.5" />
-                              <span>Fatura Kes</span>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {filteredTetkikFirms.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="p-12 text-center">
-                        <div className="flex flex-col items-center justify-center gap-2 text-slate-400">
-                          <CheckCircle2 className="w-10 h-10 text-emerald-500/60" />
-                          <span className="text-sm font-semibold text-slate-200">
-                            Faturalandırılmayı bekleyen sevk kaydı bulunmuyor.
-                          </span>
-                          <span className="text-xs text-slate-500 max-w-md">
-                            Tetkik Takip sisteminden yeni dönem sevklerini getirmek için yukarıdaki "Sevkleri Aktar" butonunu kullanabilirsiniz.
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
-      )}
 
       {/* KURAL 5: EŞLEŞMEYENLER MODALI */}
       {showUnmatchedModal && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2">
-              <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col max-h-[90vh]">
-                  <div className="p-6 border-b border-slate-700 flex justify-between items-center bg-slate-900/50 rounded-t-xl">
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-3 animate-fade-in">
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col max-h-[92vh] overflow-hidden">
+                  {/* Başlık */}
+                  <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/60">
                       <div>
                           <h3 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                              <AlertCircle className="w-6 h-6 text-yellow-500" /> Eşleşmeyenler Listesi
+                              <AlertCircle className="w-6 h-6 text-amber-400" />
+                              <span>Eşleşmeyen SGK Sicil Numaraları ({unmatchedRows.length} Firma)</span>
                           </h3>
-                          <p className="text-sm text-slate-400 mt-1">
-                              Şu {unmatchedRows.length} firmayı sistemde bulamadım, bunları sisteme yeni firma olarak mı kaydedeyim yoksa senin seçeceğin mevcut bir firmaya mı atayayım?
+                          <p className="text-xs text-slate-400 mt-1">
+                              Excel'deki bu firmalar SGK sicil no ile sistemdeki kayıtlarla eşleşmedi. Her biri için işlem seçin:
                           </p>
                       </div>
-                      <button onClick={() => setShowUnmatchedModal(false)} className="text-slate-500 hover:text-white transition-colors">
+                      <button 
+                          onClick={() => setShowUnmatchedModal(false)}
+                          className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition-colors"
+                      >
                           <XCircle className="w-6 h-6" />
                       </button>
                   </div>
-                  
-                  <div className="p-6 overflow-y-auto flex-1 space-y-4">
-                      {unmatchedRows.slice((unmatchedPage - 1) * unmatchedItemsPerPage, unmatchedPage * unmatchedItemsPerPage).map((u, relativeIdx) => {
-                          const idx = (unmatchedPage - 1) * unmatchedItemsPerPage + relativeIdx;
+
+                  {/* Hızlı İşlem Araç Çubuğu */}
+                  <div className="px-5 py-3 bg-slate-800/60 border-b border-slate-700/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="text-slate-400">
+                          Toplam <b>{unmatchedRows.length}</b> kayıt bekliyor.
+                      </div>
+                      <div className="flex items-center gap-2">
+                          <button
+                              type="button"
+                              onClick={() => {
+                                  const allSkip: Record<number, string> = {};
+                                  unmatchedRows.forEach((_, idx) => allSkip[idx] = '__SKIP__');
+                                  setSelectedMapping(allSkip);
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
+                          >
+                              Tümünü Bu Ay Atla
+                          </button>
+                          <button
+                              type="button"
+                              onClick={() => {
+                                  const allCreate: Record<number, string> = {};
+                                  unmatchedRows.forEach((_, idx) => allCreate[idx] = '__CREATE__');
+                                  setSelectedMapping(allCreate);
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-700/80 hover:bg-emerald-600 text-white font-medium transition-colors"
+                          >
+                              Tümünü Yeni Firma Olarak Ekle
+                          </button>
+                      </div>
+                  </div>
+
+                  {/* Satırlar */}
+                  <div className="p-5 overflow-y-auto flex-1 space-y-3">
+                      {unmatchedRows.slice((unmatchedPage - 1) * unmatchedItemsPerPage, unmatchedPage * unmatchedItemsPerPage).map((u, relIdx) => {
+                          const idx = (unmatchedPage - 1) * unmatchedItemsPerPage + relIdx;
+                          const currentAction = selectedMapping[idx] || '__SKIP__';
+
                           return (
-                          <div key={idx} className="bg-slate-900 border border-slate-700 p-2 rounded-lg flex flex-col md:flex-row gap-2 justify-between items-start md:items-center">
-                              <div>
-                                  <div className="text-sm font-bold text-slate-200">{u.name}</div>
-                                  <div className="text-xs text-slate-400 mt-1">Excel Çalışan: <span className="text-blue-400 font-bold">{u.count}</span> • Sınıf: {u.danger || 'Belirtilmemiş'}</div>
+                              <div 
+                                  key={idx} 
+                                  className={`p-3.5 rounded-xl border transition-all flex flex-col md:flex-row gap-3 justify-between items-start md:items-center ${
+                                      currentAction === '__CREATE__'
+                                          ? 'bg-emerald-950/20 border-emerald-500/40'
+                                          : currentAction === '__NEVER_ASK__'
+                                          ? 'bg-rose-950/20 border-rose-500/30'
+                                          : currentAction !== '__SKIP__'
+                                          ? 'bg-blue-950/20 border-blue-500/40'
+                                          : 'bg-slate-800/80 border-slate-700'
+                                  }`}
+                              >
+                                  <div className="flex-1 min-w-0">
+                                      <div className="text-sm font-bold text-slate-100 truncate flex items-center gap-2">
+                                          <span>{u.name}</span>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
+                                          <span className="font-mono bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700/60 text-slate-300">
+                                              SGK: <b>{u.sgk || 'Yok'}</b>
+                                          </span>
+                                          <span>Çalışan: <b className="text-blue-400 font-mono">{u.count}</b></span>
+                                          <span>Sınıf: <b className="text-slate-300">{u.danger || 'Belirtilmemiş'}</b></span>
+                                      </div>
+                                  </div>
+
+                                  <div className="w-full md:w-auto shrink-0 flex items-center gap-2">
+                                      <select
+                                          value={currentAction}
+                                          onChange={(e) => setSelectedMapping(prev => ({ ...prev, [idx]: e.target.value }))}
+                                          className="bg-slate-900 border border-slate-600 text-xs rounded-lg px-3 py-2 text-white outline-none focus:border-blue-500 w-full md:w-72"
+                                      >
+                                          <option value="__SKIP__">⏭️ Bu Ay Atla (İşlem Yapma)</option>
+                                          <option value="__CREATE__">➕ Yeni Firma Ekle (Sıralı Kayıt)</option>
+                                          <option value="__NEVER_ASK__">🚫 Bu Firmayı Bir Daha Sorma (Kara Liste)</option>
+                                          <optgroup label="── Mevcut Firmaya Bağla ──">
+                                              {firms.filter(f => !f.parentFirmId).sort((a,b) => a.name.localeCompare(b.name, 'tr')).map(f => (
+                                                  <option key={f.id} value={f.id}>
+                                                      🔗 {f.name} {f.sgkNumber ? `(Sicil: ${f.sgkNumber})` : '(Sicil Yok)'}
+                                                  </option>
+                                              ))}
+                                          </optgroup>
+                                      </select>
+                                  </div>
                               </div>
-                              <div className="flex items-center gap-2 w-full md:w-auto">
-                                  <select 
-                                      className="bg-slate-800 border border-slate-600 text-sm rounded-lg px-3 py-2 text-white outline-none focus:border-blue-500 w-full md:w-48"
-                                      value={selectedMapping[idx] || ""}
-                                      onChange={(e) => setSelectedMapping(prev => ({...prev, [idx]: e.target.value}))}
-                                  >
-                                      <option value="">-- Yeni Firma Oluştur --</option>
-                                      {firms.map(f => (
-                                          <option key={f.id} value={f.id}>{f.name}</option>
-                                      ))}
-                                  </select>
-                              </div>
-                          </div>
                           );
                       })}
                   </div>
 
+                  {/* Sayfalama */}
                   {unmatchedRows.length > unmatchedItemsPerPage && (
-                      <div className="flex items-center justify-between px-6 py-3 bg-slate-900/50 border-t border-slate-700">
-                          <span className="text-sm text-slate-400">
-                              Toplam {unmatchedRows.length} kayıt. Sayfa {unmatchedPage} / {Math.ceil(unmatchedRows.length / unmatchedItemsPerPage)}
+                      <div className="flex items-center justify-between px-5 py-3 bg-slate-950/50 border-t border-slate-800 text-xs">
+                          <span className="text-slate-400">
+                              Sayfa {unmatchedPage} / {Math.ceil(unmatchedRows.length / unmatchedItemsPerPage)}
                           </span>
                           <div className="flex gap-2">
-                              <button 
+                              <button
+                                  type="button"
                                   onClick={() => setUnmatchedPage(p => Math.max(1, p - 1))}
                                   disabled={unmatchedPage === 1}
-                                  className="px-3 py-1 bg-slate-700 text-white rounded hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="px-3 py-1 bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-40"
                               >
                                   Önceki
                               </button>
-                              <button 
+                              <button
+                                  type="button"
                                   onClick={() => setUnmatchedPage(p => Math.min(Math.ceil(unmatchedRows.length / unmatchedItemsPerPage), p + 1))}
                                   disabled={unmatchedPage === Math.ceil(unmatchedRows.length / unmatchedItemsPerPage)}
-                                  className="px-3 py-1 bg-slate-700 text-white rounded hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  className="px-3 py-1 bg-slate-800 text-white rounded hover:bg-slate-700 disabled:opacity-40"
                               >
                                   Sonraki
                               </button>
@@ -2035,92 +1645,73 @@ const Preparation = () => {
                       </div>
                   )}
 
-                  <div className="p-6 border-t border-slate-700 flex justify-end gap-3 bg-slate-900/50 rounded-b-xl">
-                      <button onClick={() => setShowUnmatchedModal(false)} className="px-4 py-2 text-slate-400 hover:text-white transition-colors">Vazgeç & Kapat</button>
-                      <button 
-                          onClick={() => {
-                              try {
-                                  const newFirms: Firm[] = [];
-                                  const newUpdates: Record<string, number> = {};
-                                  const newUploads = [...uploadedFirmIds];
-
-                                  unmatchedRows.forEach((u, idx) => {
-                                      const targetFirmId = selectedMapping[idx];
-                                      if (targetFirmId) {
-                                          // Mevcut firmaya eşleştir: Excel sayısını doğrudan yaz
-                                          newUpdates[targetFirmId] = u.count;
-                                          if (!newUploads.includes(targetFirmId)) newUploads.push(targetFirmId);
-                                          
-                                          // SGK Numarasını firmaya ekle (Bir sonraki ay sormaması için)
-                                          if (u.sgk) {
-                                              const existingFirm = firms.find(f => f.id === targetFirmId);
-                                              if (existingFirm) {
-                                                  if (!existingFirm.sgkNumber) {
-                                                      existingFirm.sgkNumber = u.sgk;
-                                                      db.updateFirm(existingFirm);
-                                                  } else {
-                                                      const existingSgks = existingFirm.sgkNumber.split(',').map(s => s.trim());
-                                                      if (!existingSgks.includes(u.sgk.trim())) {
-                                                          existingFirm.sgkNumber += `, ${u.sgk.trim()}`;
-                                                          db.updateFirm(existingFirm);
-                                                      }
-                                                  }
-                                              }
-                                          }
-                                      } else {
-                                          // Yeni firma oluştur
-                                          const newFirm = db.addFirm({
-                                              name: u.name,
-                                              dangerClass: u.danger,
-                                              sgkNumber: u.sgk || '',
-                                              basePersonLimit: u.count,
-                                              baseFee: 1000, // Varsayılan ücret, kullanıcı sonra değiştirir
-                                              extraPersonFee: 50,
-                                              expertPercentage: globalSettings?.expertPercentage || 60,
-                                              doctorPercentage: globalSettings?.doctorPercentage || 40,
-                                              defaultInvoiceType: InvoiceType.E_ARSIV,
-                                              pricingModel: PricingModel.STANDARD
-                                          });
-                                          newFirms.push(newFirm);
-                                          newUpdates[newFirm.id] = u.count;
-                                          newUploads.push(newFirm.id);
-                                      }
-                                  });
-
-                                  if (newFirms.length > 0) {
-                                      setFirms(db.getFirms());
-                                  }
-
-                                  setItems(prev => {
-                                      const newItems = { ...prev };
-                                      Object.keys(newUpdates).forEach(id => {
-                                          newItems[id] = {
-                                              ...(newItems[id] || { firmId: id, extraItemAmount: 0 }),
-                                              currentEmployeeCount: newUpdates[id]
-                                          };
-                                      });
-                                      db.savePreparationItems(Object.values(newItems));
-                                      return newItems;
-                                  });
-
-                                  setUploadedFirmIds(newUploads);
-                                  setUnmatchedRows([]);
-                                  setSelectedMapping({});
-                                  setShowUnmatchedModal(false);
-                                  alert("Eşleşmeyen firmalar başarıyla sisteme aktarıldı.");
-                              } catch (err: any) {
-                                  console.error("Hata:", err);
-                                  alert("İşlem sırasında hata oluştu: " + (err?.message || err));
-                              }
-                          }}
-                          className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
+                  {/* Alt Butonlar */}
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex justify-between items-center gap-3">
+                      <button
+                          type="button"
+                          onClick={() => setShowUnmatchedModal(false)}
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-colors"
                       >
-                          Seçimleri Uygula
+                          Kapat
+                      </button>
+                      <button
+                          type="button"
+                          onClick={handleApplyUnmatched}
+                          className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-900/30 flex items-center gap-2"
+                      >
+                          <CheckCircle className="w-4 h-4" />
+                          <span>Seçimleri Onayla ve Uygula</span>
                       </button>
                   </div>
               </div>
           </div>
       )}
+
+      {/* SIRALI YENİ FİRMA KAYIT MODALI */}
+      <SequentialFirmModal
+          isOpen={showSequentialModal}
+          queue={sequentialQueue}
+          currentIndex={sequentialIndex}
+          firmGroups={groups}
+          defaultGroup={selectedGroup !== 'ALL' && selectedGroup !== 'UNGROUPED' ? selectedGroup : undefined}
+          globalSettings={globalSettings}
+          onSaveCurrent={(createdFirm, employeeCount) => {
+              setItems(prev => {
+                  const updated = {
+                      ...prev,
+                      [createdFirm.id]: {
+                          firmId: createdFirm.id,
+                          currentEmployeeCount: employeeCount,
+                          extraItemAmount: 0
+                      }
+                  };
+                  db.savePreparationItems(Object.values(updated));
+                  return updated;
+              });
+              setUploadedFirmIds(prev => prev.includes(createdFirm.id) ? prev : [...prev, createdFirm.id]);
+              setFirms(db.getFirms());
+
+              if (sequentialIndex + 1 < sequentialQueue.length) {
+                  setSequentialIndex(sequentialIndex + 1);
+              } else {
+                  setShowSequentialModal(false);
+                  setSequentialQueue([]);
+                  alert("Tüm firmalar başarıyla sisteme kaydedildi ve çalışan sayıları hazırlandı.");
+              }
+          }}
+          onSkipCurrent={() => {
+              if (sequentialIndex + 1 < sequentialQueue.length) {
+                  setSequentialIndex(sequentialIndex + 1);
+              } else {
+                  setShowSequentialModal(false);
+                  setSequentialQueue([]);
+              }
+          }}
+          onClose={() => {
+              setShowSequentialModal(false);
+              setSequentialQueue([]);
+          }}
+      />
 
       {/* SEVK / TETKİK CARİ EŞLEŞTİRME MODALI (FİRMA BAZLI) */}
       {showUnmatchedHealthModal && (
@@ -2308,7 +1899,7 @@ const Preparation = () => {
                   Toplam: <b className="text-white font-mono">{selectedTetkikDetailFirm.records.length} Sevk</b>
                 </span>
                 <span className="text-xs text-slate-400">
-                  Fatura Tutarı: <b className="text-emerald-400 font-mono text-base">{formatCurrency(tetkikFirmsToBill.find(tf => tf.firm.id === selectedTetkikDetailFirm.firm.id)?.grandTotal ?? selectedTetkikDetailFirm.grandTotal)}</b>
+                  Fatura Tutarı: <b className="text-emerald-400 font-mono text-base">{formatCurrency(selectedTetkikDetailFirm.grandTotal)}</b>
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -2318,13 +1909,9 @@ const Preparation = () => {
                 >
                   Kapat
                 </button>
-                <button
-                  onClick={() => handleInvoiceSingleTetkik(selectedTetkikDetailFirm.firm.id)}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center gap-1.5"
-                >
-                  <Receipt className="w-4 h-4" />
-                  <span>Faturayı Kes</span>
-                </button>
+                <div className="text-xs text-slate-400 italic">
+                  * Bu sevkler firmanın ana faturası kesildiğinde otomatik olarak faturaya bağlanır.
+                </div>
               </div>
             </div>
           </div>

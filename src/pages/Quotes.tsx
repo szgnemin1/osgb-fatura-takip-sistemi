@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/db';
 import { Firm, PricingModel, GlobalSettings } from '../types';
-import { FileSignature, Search, Download, Settings, X, Save, CheckCircle, Clock } from 'lucide-react';
+import { FileSignature, Search, Download, Settings, X, Save, CheckCircle, Clock, TrendingUp, Percent, Filter } from 'lucide-react';
 import { COMPANY_LOGO_BASE64 } from '../assets/logoBase64';
 import { ARIAL_BASE64 } from '../assets/arialBase64';
 import ReactQuill from 'react-quill';
@@ -37,6 +37,12 @@ const Quotes = () => {
   const [introText, setIntroText] = useState(DEFAULT_INTRO);
   const [footerText, setFooterText] = useState(DEFAULT_FOOTER);
 
+  // Toplu Zam Oranı State'leri
+  const [bulkRaisePercent, setBulkRaisePercent] = useState<string>('');
+  const [bulkRoundType, setBulkRoundType] = useState<'round' | 'ceil10' | 'ceil50' | 'none'>('round');
+  const [selectedGroup, setSelectedGroup] = useState<string>('ALL');
+  const [groups, setGroups] = useState<string[]>([]);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -44,6 +50,8 @@ const Quotes = () => {
   const loadData = () => {
     const loadedFirms = db.getFirms() || [];
     setFirms(loadedFirms);
+    const loadedGroups = db.getFirmGroups ? db.getFirmGroups() : [];
+    setGroups(loadedGroups);
     
     const settings = db.getGlobalSettings() || {} as GlobalSettings;
     if (settings.quoteIntroTemplate) setIntroText(settings.quoteIntroTemplate);
@@ -267,7 +275,117 @@ const Quotes = () => {
     }
   };
 
-  const filteredFirms = firms.filter(f => f.name.toLowerCase().includes(searchTerm.toLowerCase()) && (f.pricingModel === PricingModel.STANDARD || f.pricingModel === PricingModel.TOLERANCE || f.pricingModel === PricingModel.PER_CAPITA));
+  const filteredFirms = firms.filter(f => {
+    const matchesSearch = f.name.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesGroup = selectedGroup === 'ALL'
+      ? true
+      : selectedGroup === 'UNGROUPED'
+      ? !f.group
+      : f.group === selectedGroup;
+    const matchesModel = f.pricingModel === PricingModel.STANDARD || f.pricingModel === PricingModel.TOLERANCE || f.pricingModel === PricingModel.PER_CAPITA;
+    return matchesSearch && matchesGroup && matchesModel;
+  });
+
+  // Toplu Zam Oranını Uygula (Tüm ücretlere belirtilen yüzdeyi işler)
+  const handleApplyBulkRaise = () => {
+    const percent = parseFloat(bulkRaisePercent);
+    if (isNaN(percent) || percent <= 0) {
+      alert("Lütfen geçerli bir zam oranı girin (Örn: 25 veya 40).");
+      return;
+    }
+
+    if (filteredFirms.length === 0) {
+      alert("İşlem yapılacak firma bulunamadı.");
+      return;
+    }
+
+    const calculateNewFee = (currentFee: number): number => {
+      if (!currentFee || currentFee <= 0) return 0;
+      const raw = currentFee * (1 + percent / 100);
+      if (bulkRoundType === 'ceil10') {
+        return Math.ceil(raw / 10) * 10;
+      } else if (bulkRoundType === 'ceil50') {
+        return Math.ceil(raw / 50) * 50;
+      } else if (bulkRoundType === 'none') {
+        return Math.round(raw * 100) / 100;
+      }
+      return Math.round(raw);
+    };
+
+    setQuotes(prev => {
+      const updated = { ...prev };
+      filteredFirms.forEach(firm => {
+        const q = updated[firm.id];
+        if (!q) return;
+
+        updated[firm.id] = {
+          ...q,
+          newBaseFee: calculateNewFee(q.currentBaseFee),
+          newExtraPersonFee: calculateNewFee(q.currentExtraPersonFee)
+        };
+      });
+      return updated;
+    });
+
+    alert(`%${percent} zam oranı listelenen ${filteredFirms.length} firmanın taban ve ekstra ücretlerine başarıyla uygulandı.`);
+  };
+
+  // Tüm Yeni Teklifleri Taslak Olarak Kaydet
+  const handleSaveAllQuotes = () => {
+    let count = 0;
+    const updatedFirms = [...firms];
+    
+    Object.values(quotes).forEach(q => {
+      const firm = updatedFirms.find(f => f.id === q.firmId);
+      if (firm) {
+        firm.proposedBasePersonLimit = q.newBasePersonLimit;
+        firm.proposedBaseFee = q.newBaseFee;
+        firm.proposedExtraPersonFee = q.newExtraPersonFee;
+        if (!firm.quoteStatus || firm.quoteStatus === 'BEKLIYOR') {
+          firm.quoteStatus = 'ONAYDA';
+        }
+        db.updateFirm(firm);
+        count++;
+      }
+    });
+
+    setFirms(updatedFirms);
+    alert(`${count} firmanın teklif fiyatları taslak olarak kaydedildi.`);
+  };
+
+  // Tüm Teklifleri Onayla ve Firmanın Ana Sözleşme Fiyatı Yap
+  const handleApproveAllQuotes = () => {
+    const toApprove = filteredFirms.filter(f => {
+      const q = quotes[f.id];
+      return q && q.newBaseFee > 0;
+    });
+
+    if (toApprove.length === 0) {
+      alert("Onaylanacak geçerli fiyat teklifi bulunamadı.");
+      return;
+    }
+
+    if (!window.confirm(`DİKKAT: Listelenen ${toApprove.length} firmanın yeni teklif fiyatları, kalıcı olarak mevcut cari sözleşme fiyatı olarak güncellenecektir. Onaylıyor musunuz?`)) {
+      return;
+    }
+
+    toApprove.forEach(f => {
+      const q = quotes[f.id];
+      if (q) {
+        f.quoteStatus = 'ONAYLANDI';
+        f.basePersonLimit = q.newBasePersonLimit;
+        f.baseFee = q.newBaseFee;
+        f.extraPersonFee = q.newExtraPersonFee;
+        f.proposedBasePersonLimit = q.newBasePersonLimit;
+        f.proposedBaseFee = q.newBaseFee;
+        f.proposedExtraPersonFee = q.newExtraPersonFee;
+        db.updateFirm(f);
+      }
+    });
+
+    loadData();
+    alert(`${toApprove.length} firmanın sözleşme fiyatları kalıcı olarak güncellendi ve teklifler onaylandı.`);
+  };
 
   const modules = {
     toolbar: [
@@ -308,17 +426,136 @@ const Quotes = () => {
         </div>
       </div>
 
+      {/* TOPLU ZAM ORANI & İŞLEM PANELİ */}
+      <div className="bg-slate-800/90 border border-slate-700 p-4 rounded-xl shadow-lg flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+        {/* Sol Taraf: Zam Oranı Girişi & Hızlı Yüzdeler & Yuvarlama */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-slate-200">
+            <div className="w-9 h-9 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-200">Toplu Zam Oranı:</div>
+              <div className="text-[10px] text-slate-400">Tüm fiyatları tek tıkla artırın</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5">
+            <Percent className="w-4 h-4 text-slate-400" />
+            <input 
+              type="number"
+              min="0"
+              placeholder="Oran (Örn: 35)"
+              value={bulkRaisePercent}
+              onChange={(e) => setBulkRaisePercent(e.target.value)}
+              className="bg-transparent text-sm text-white font-bold w-24 outline-none placeholder:text-slate-500"
+            />
+            <span className="text-xs text-slate-400 font-semibold">%</span>
+          </div>
+
+          {/* Hızlı Yüzde Butonları */}
+          <div className="flex items-center gap-1">
+            {[20, 25, 30, 40, 50].map(pct => (
+              <button
+                key={pct}
+                type="button"
+                onClick={() => setBulkRaisePercent(String(pct))}
+                className={`text-[11px] font-semibold px-2 py-1 rounded transition-colors ${
+                  bulkRaisePercent === String(pct)
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
+                }`}
+              >
+                +{pct}%
+              </button>
+            ))}
+          </div>
+
+          {/* Yuvarlama Seçeneği */}
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1">
+            <span className="text-[11px] text-slate-400">Yuvarlama:</span>
+            <select
+              value={bulkRoundType}
+              onChange={(e) => setBulkRoundType(e.target.value as any)}
+              className="bg-transparent text-xs text-white outline-none cursor-pointer"
+            >
+              <option value="round" className="bg-slate-900">Tam Sayı (Düz)</option>
+              <option value="ceil10" className="bg-slate-900">10'un Katı (Örn: 2450 TL)</option>
+              <option value="ceil50" className="bg-slate-900">50'nin Katı (Örn: 2450 / 2500 TL)</option>
+              <option value="none" className="bg-slate-900">Kuruşlu (Hassas)</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleApplyBulkRaise}
+            className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow-md shadow-blue-900/30 transition-all active:scale-95"
+          >
+            <TrendingUp className="w-4 h-4" />
+            <span>Zam Oranını Uygula ({filteredFirms.length} Firma)</span>
+          </button>
+        </div>
+
+        {/* Sağ Taraf: Toplu Kaydet & Toplu Onayla Butonları */}
+        <div className="flex items-center gap-2 self-end lg:self-auto shrink-0">
+          <button
+            type="button"
+            onClick={handleSaveAllQuotes}
+            className="bg-slate-700 hover:bg-slate-600 text-slate-200 hover:text-white font-semibold text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 border border-slate-600 transition-colors shadow-sm"
+            title="Yapılan tüm teklif fiyatlarını taslak olarak kaydeder"
+          >
+            <Save className="w-4 h-4 text-purple-400" />
+            <span>Tüm Teklifleri Kaydet</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleApproveAllQuotes}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 shadow-md shadow-emerald-900/30 transition-all active:scale-95"
+            title="Tüm teklif fiyatlarını onaylar ve firmaların ana sözleşme fiyatı yapar"
+          >
+            <CheckCircle className="w-4 h-4" />
+            <span>Tümünü Onayla ve Fiyatları Güncelle</span>
+          </button>
+        </div>
+      </div>
+
       <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 shadow-xl overflow-hidden backdrop-blur-sm">
-        <div className="p-4 border-b border-slate-700/50 flex justify-between items-center bg-slate-800/80">
-            <div className="relative w-64">
+        <div className="p-4 border-b border-slate-700/50 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 bg-slate-800/80">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative w-64">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
-                type="text"
-                placeholder="Firma Ara..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                  type="text"
+                  placeholder="Firma Ara..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition-all"
                 />
+              </div>
+
+              {groups.length > 0 && (
+                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5">
+                  <Filter className="w-4 h-4 text-slate-400" />
+                  <select
+                    value={selectedGroup}
+                    onChange={(e) => setSelectedGroup(e.target.value)}
+                    className="bg-transparent text-xs text-white outline-none cursor-pointer"
+                  >
+                    <option value="ALL" className="bg-slate-900">Tüm Gruplar ({firms.length})</option>
+                    {groups.map(grp => (
+                      <option key={grp} value={grp} className="bg-slate-900">
+                        {grp} ({firms.filter(f => f.group === grp).length})
+                      </option>
+                    ))}
+                    <option value="UNGROUPED" className="bg-slate-900">Grupsuz Firmalar</option>
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="text-xs text-slate-400">
+              Listelenen: <b className="text-white font-mono">{filteredFirms.length}</b> firma
             </div>
         </div>
 

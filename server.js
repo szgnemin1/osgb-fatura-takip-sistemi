@@ -1411,8 +1411,8 @@ app.post('/api/save', authenticateToken, async (req, res) => {
         await upsertTable('osgb_firms', 'firms', 'id', false);
         await upsertTable('osgb_transactions', 'transactions', 'id', false);
         await upsertTable('osgb_preparation', 'preparation', 'firmId', true);
-        await upsertTable('osgb_expense_categories', 'expense_categories', 'id', false);
-        await upsertTable('osgb_expenses', 'expenses', 'id', false);
+        await upsertTable('osgb_expense_categories', 'expense_categories', 'id', true);
+        await upsertTable('osgb_expenses', 'expenses', 'id', true);
         await upsertTable('osgb_external_health', 'external_health', 'id', false);
 
         if (newData.osgb_global_settings) {
@@ -1482,7 +1482,7 @@ app.post('/api/transactions/delete', authenticateToken, requireAdmin, async (req
     }
 });
 
-// 3.3 API: Firma Silme (Tekil veya Toplu - Admin Only)
+// 3.3 API: Firma Silme (Tekil veya Toplu - Admin Only + Kaskad İlişkili Kayıtlar)
 app.post('/api/firms/delete', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const { id, ids } = req.body;
@@ -1490,11 +1490,37 @@ app.post('/api/firms/delete', authenticateToken, requireAdmin, async (req, res) 
         if (targetIds.length === 0) return res.status(400).json({ error: 'ID belirtilmedi' });
 
         await db.run('BEGIN IMMEDIATE TRANSACTION');
+        
+        // 1. Firmalar tablosundan sil
         const delStmt = await db.prepare('DELETE FROM firms WHERE id = ?');
         for (const fId of targetIds) {
             await delStmt.run(fId);
         }
         await delStmt.finalize();
+
+        // 2. Kaskad: Bu firmalara ait faturaları (transactions) sil
+        const delTransStmt = await db.prepare('DELETE FROM transactions WHERE firmId = ?');
+        for (const fId of targetIds) {
+            await delTransStmt.run(fId);
+        }
+        await delTransStmt.finalize();
+
+        // 3. Kaskad: Bu firmalara ait hazırlık kayıtlarını (preparation) sil
+        const delPrepStmt = await db.prepare('DELETE FROM preparation WHERE firmId = ?');
+        for (const fId of targetIds) {
+            await delPrepStmt.run(fId);
+        }
+        await delPrepStmt.finalize();
+
+        // 4. Kaskad: Varsa tetkik eşleştirme kayıtlarını sil
+        try {
+            const delMapStmt = await db.prepare('DELETE FROM tetkik_firm_mappings WHERE firm_id = ?');
+            for (const fId of targetIds) {
+                await delMapStmt.run(fId);
+            }
+            await delMapStmt.finalize();
+        } catch (_) {}
+
         await db.run('COMMIT');
 
         await logAuditEvent(req, 'FIRMS_DELETED', { count: targetIds.length, ids: targetIds }, 'SUCCESS');
@@ -1505,6 +1531,62 @@ app.post('/api/firms/delete', authenticateToken, requireAdmin, async (req, res) 
         try { await db.run('ROLLBACK'); } catch (_) {}
         console.error('Firma silme hatası:', e);
         res.status(500).json({ error: 'Firma silme hatası' });
+    }
+});
+
+// 3.3.1 API: Gider Silme (Tekil veya Toplu)
+app.post('/api/expenses/delete', authenticateToken, async (req, res) => {
+    try {
+        const { id, ids } = req.body;
+        const targetIds = ids && Array.isArray(ids) ? ids : (id ? [id] : []);
+        if (targetIds.length === 0) return res.status(400).json({ error: 'ID belirtilmedi' });
+
+        await db.run('BEGIN IMMEDIATE TRANSACTION');
+        const delStmt = await db.prepare('DELETE FROM expenses WHERE id = ?');
+        for (const eId of targetIds) {
+            await delStmt.run(eId);
+        }
+        await delStmt.finalize();
+        await db.run('COMMIT');
+
+        io.emit('db_updated');
+        res.json({ success: true, deletedCount: targetIds.length });
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        console.error('Gider silme hatası:', e);
+        res.status(500).json({ error: 'Gider silme hatası' });
+    }
+});
+
+// 3.3.2 API: Gider Kategorisi Silme (İlişkili Giderleri Temizleme Dahil)
+app.post('/api/expense-categories/delete', authenticateToken, async (req, res) => {
+    try {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID belirtilmedi' });
+
+        await db.run('BEGIN IMMEDIATE TRANSACTION');
+        await db.run('DELETE FROM expense_categories WHERE id = ?', id);
+        
+        // Bu kategoriye ait gider kayıtlarını da temizle
+        const allExpenses = await db.all('SELECT id, data FROM expenses');
+        const delExpStmt = await db.prepare('DELETE FROM expenses WHERE id = ?');
+        for (const row of allExpenses) {
+            try {
+                const item = JSON.parse(row.data);
+                if (item.categoryId === id) {
+                    await delExpStmt.run(row.id);
+                }
+            } catch (_) {}
+        }
+        await delExpStmt.finalize();
+        await db.run('COMMIT');
+
+        io.emit('db_updated');
+        res.json({ success: true });
+    } catch (e) {
+        try { await db.run('ROLLBACK'); } catch (_) {}
+        console.error('Kategori silme hatası:', e);
+        res.status(500).json({ error: 'Kategori silme hatası' });
     }
 });
 

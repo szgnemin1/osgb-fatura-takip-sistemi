@@ -180,6 +180,19 @@ export const db = {
   deleteFirm: (id: string) => {
     const firms = getStorage<Firm[]>(STORAGE_KEYS.FIRMS, []);
     setStorage(STORAGE_KEYS.FIRMS, firms.filter(f => f.id !== id));
+
+    // Kaskad: Bu firmaya ait faturaları ve hazırlık kayıtlarını da temizle
+    const transactions = getStorage<Transaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+    const remainingTrans = transactions.filter(t => t.firmId !== id);
+    if (remainingTrans.length !== transactions.length) {
+      setStorage(STORAGE_KEYS.TRANSACTIONS, remainingTrans);
+    }
+    const preparation = getStorage<PreparationItem[]>(STORAGE_KEYS.PREPARATION, []);
+    const remainingPrep = preparation.filter(p => p.firmId !== id);
+    if (remainingPrep.length !== preparation.length) {
+      setStorage(STORAGE_KEYS.PREPARATION, remainingPrep);
+    }
+
     if (!isElectron) {
       fetchWithAuth('/api/firms/delete', {
         method: 'POST',
@@ -192,6 +205,19 @@ export const db = {
   deleteFirmsBulk: (ids: string[]) => {
     const firms = getStorage<Firm[]>(STORAGE_KEYS.FIRMS, []);
     setStorage(STORAGE_KEYS.FIRMS, firms.filter(f => !ids.includes(f.id)));
+
+    // Kaskad: Bu firmalara ait faturaları ve hazırlık kayıtlarını da temizle
+    const transactions = getStorage<Transaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+    const remainingTrans = transactions.filter(t => !ids.includes(t.firmId));
+    if (remainingTrans.length !== transactions.length) {
+      setStorage(STORAGE_KEYS.TRANSACTIONS, remainingTrans);
+    }
+    const preparation = getStorage<PreparationItem[]>(STORAGE_KEYS.PREPARATION, []);
+    const remainingPrep = preparation.filter(p => !ids.includes(p.firmId));
+    if (remainingPrep.length !== preparation.length) {
+      setStorage(STORAGE_KEYS.PREPARATION, remainingPrep);
+    }
+
     if (!isElectron) {
       fetchWithAuth('/api/firms/delete', {
         method: 'POST',
@@ -361,6 +387,21 @@ export const db = {
   deleteExpenseCategory: (id: string) => {
     const cats = getStorage<ExpenseCategory[]>(STORAGE_KEYS.EXPENSE_CATEGORIES, []);
     setStorage(STORAGE_KEYS.EXPENSE_CATEGORIES, cats.filter(c => c.id !== id));
+
+    // Bu kategoriye ait giderleri de temizle
+    const expenses = getStorage<Expense[]>(STORAGE_KEYS.EXPENSES, []);
+    const remainingExpenses = expenses.filter(e => e.categoryId !== id);
+    if (remainingExpenses.length !== expenses.length) {
+      setStorage(STORAGE_KEYS.EXPENSES, remainingExpenses);
+    }
+
+    if (!isElectron) {
+      fetchWithAuth('/api/expense-categories/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      }).catch(() => {});
+    }
   },
 
   getExpenses: (): Expense[] => getStorage<Expense[]>(STORAGE_KEYS.EXPENSES, []),
@@ -375,6 +416,13 @@ export const db = {
   deleteExpense: (id: string) => {
     const expenses = getStorage<Expense[]>(STORAGE_KEYS.EXPENSES, []);
     setStorage(STORAGE_KEYS.EXPENSES, expenses.filter(e => e.id !== id));
+    if (!isElectron) {
+      fetchWithAuth('/api/expenses/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      }).catch(() => {});
+    }
   },
 
   getPreparationItems: (): PreparationItem[] => getStorage<PreparationItem[]>(STORAGE_KEYS.PREPARATION, []),
@@ -435,6 +483,24 @@ export const db = {
   }),
 
   saveGlobalSettings: (settings: GlobalSettings) => { setStorage(STORAGE_KEYS.GLOBAL_SETTINGS, settings); },
+
+  // --- İGNORLANAN (BİR DAHA SORULMAYACAK) SGK NUMARALARI ---
+  getIgnoredSgkNumbers: (): string[] => {
+      const settings = db.getGlobalSettings();
+      return Array.isArray(settings.ignoredSgkNumbers) ? settings.ignoredSgkNumbers : [];
+  },
+
+  addIgnoredSgkNumber: (sgk: string) => {
+      const clean = String(sgk || '').replace(/\D/g, '');
+      if (!clean) return;
+      const settings = db.getGlobalSettings();
+      const current = Array.isArray(settings.ignoredSgkNumbers) ? [...settings.ignoredSgkNumbers] : [];
+      if (!current.includes(clean)) {
+          current.push(clean);
+          settings.ignoredSgkNumbers = current;
+          db.saveGlobalSettings(settings);
+      }
+  },
 
   // --- DİNAMİK FİRMA GRUPLARI YÖNETİMİ ---
   getFirmGroups: (): string[] => {
